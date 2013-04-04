@@ -5,23 +5,11 @@
 	<meta lang="en-US" charset="utf-8">
 	<meta name="author" content="Aero Windwalker">
 	<link rel="stylesheet" type="text/css" href="css/style.css">
-	<script src="js/jquery.js"></script>
-	<script src="js/script.js"></script>
+	<script type="text/javascript" src="js/jquery.js"></script>	
+	<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDgGDTqE88iWyf_7AgWT2Yu2sEALAnX0AU&sensor=true"></script>
+	<script type="text/javascript" src="js/script.js"></script>
 </head>
 	<body>
-		<div id="tripmeter">
-		  <p>
-		    Starting Location (lat, lon):<br/>
-		    <span id="startLat">???</span>°, <span id="startLon">???</span>°
-		  </p>
-		  <p>
-		    Current Location (lat, lon):<br/>
-		    <span id="currentLat">???</span>°, <span id="currentLon">???</span>°
-		  </p>
-		  <p>
-		    Distance from starting location:<br/>
-		    <span id="distance">0</span> km
-		  </p>
-		</div>
+		<div id="map-canvas"></div>
 	</body>
 </html>
