@@ -1,0 +1,4 @@
+html { height: 100% }
+body { height: 100%; margin: 0; padding: 0 }
+#map-canvas { height: 100% }
+.style1 {background-color:#ffffff;font-weight:bold;border:2px #006699 solid;}
