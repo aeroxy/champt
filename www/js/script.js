@@ -1,9 +1,10 @@
-window.onload = function() {
+$(document).ready(function() {
 	function drawMe() {
 		navigator.geolocation.watchPosition(function(position) {
 			var latitude = position.coords.latitude;
 			var longitude = position.coords.longitude;
 			var gLatLng = new google.maps.LatLng(latitude, longitude);
+			var nameLatLng = new google.maps.LatLng(latitude - 0.00004, longitude);
 			var mapOptions = {
 				center: gLatLng,
 				zoom: 18,
@@ -16,22 +17,49 @@ window.onload = function() {
 			};
 			var map = new google.maps.Map(document.getElementById("map-canvas"),mapOptions);
 			var yourLocation = {
-				strokeColor: "#FF0000",
-				strokeOpacity: 0.5,
-				strokeWeight: 1,
-				fillColor: "#FF0000",
+				path: google.maps.SymbolPath.CIRCLE,
+				strokeColor: "#4c8f2a",
+				strokeWeight: 2,
+				fillColor: "#a2e346",
 				fillOpacity: 1,
-				map: map,
-				center: gLatLng,
-				radius: 4,
+				scale: 6,
 			};
-			var drawCircle = new google.maps.Circle(yourLocation);
+			var drawCircle = new google.maps.Marker({
+				position: gLatLng,
+				icon: yourLocation,
+				map: map,
+			});
+			var mapUserName = new MapLabel({
+				text: 'Anonymous User',
+				position: nameLatLng,
+				map: map,
+				fontSize: 14,
+				fontColor: "#ffffff",
+				strokeWeight: 4,
+				strokeColor: "4c8f2a",
+				fontFamily: "Avenir",
+			});
+			var changeUserName = document.getElementById('change-username');
+			google.maps.event.addDomListener(changeUserName, 'click', function() {
+				mapUserName.set('text', document.getElementById('userName').value);
+			});
 		}, function(error) {
 			alert('Error occurred. Error code: ' + error.code);
 		});
-	}
+	};
 	drawMe();
-	$(window).on("resize", function(){
+
+	function resizeText() {
+		var windowHeight = $(window).height();
+		var windowWidth = $(window).width();
+		$("footer").css({
+			'padding-top': windowHeight * 0.15 * 0.1 + 'px',
+		});
+	};
+	resizeText();
+
+	$(window).resize(function(){
 		drawMe();
+		resizeText();
 	});
-};
+});
