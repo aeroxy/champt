@@ -24,6 +24,8 @@ header {
 
 footer {
   box-sizing: border-box;
+  moz-box-sizing: border-box;
+  webkit-box-sizing: border-box;
   padding-left: 2.5%;
   width: 100%;
   height: 15%;
@@ -38,4 +40,10 @@ footer {
 #map-canvas {
   height: 100%;
   z-index: 1;
+}
+
+.bubble {
+  color:#fff;
+  font-family: 'Avenir', 'MS Trebuchet', sans-serif;
+  font-size: 14px;
 }
