@@ -39,23 +39,23 @@ $(document).ready(function() {
 				strokeColor: "4c8f2a",
 				fontFamily: "Avenir",
 			});
-			var changeUserName = document.getElementById('change-username');
-			google.maps.event.addDomListener(changeUserName, 'click', function() {
-				mapUserName.set('text', document.getElementById('userName').value);
-			});
 
 			var infoBubble = new InfoBubble({
-				content: '<div><p>:/ I haven\'t had weekends seem when?!</p></div>',
 				position: gLatLng,
 				maxWidth: 300,
-				backgroundColor: 'rgba(57,57,57,0.8)',
+				backgroundColor: 'rgba(255,255,255,0.8)',
 				backgroundClassName: 'bubble',
 				hideCloseButton: true,
-				borderRadius: 6,
 				shadowStyle: 0,
 			});
 
-			infoBubble.open(map);
+			var status = $("#status-update").val();
+
+			$("#update").click(function(){
+				mapUserName.set('text', $("#userName").val());
+				infoBubble.addTab($("#userName").val() + ':', status);
+				infoBubble.open(map);
+			});
 
 		}, function(error) {
 			alert('Error occurred. Error code: ' + error.code);
