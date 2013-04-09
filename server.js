@@ -1,9 +1,10 @@
-var http = require("http");
+var http = require('http');
 var fs = require('fs');
 var path = require('path');
 var url = require('url');
+var io = require('socket.io');
 
-http.createServer(function(req,res) {
+var httpServer = http.createServer(function(req,res) {
 	var cacheLoad;
 
 	if(req.url == "/" || req.url == "") {
@@ -27,4 +28,17 @@ http.createServer(function(req,res) {
 		var cache = fs.readFileSync(cacheLoad);
 		res.end(cache);
 	});
-}).listen(8000);
+})
+
+httpServer.listen(8000);
+
+var webSocket = io.listen(httpServer);
+
+webSocket.sockets.on('connection',function(socket){
+
+	socket.on('addToMap',function(data) {
+		console.log(data);
+		socket.broadcast.emit('test',data);
+	});
+
+});

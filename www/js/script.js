@@ -1,18 +1,14 @@
 $(document).ready(function() {
-	// var socket = io.connect('http://localhost');
-	// var socket = io.connect('http://localhost');
-	socket.on('news', function (data) {
+	var socket = io.connect('http://localhost');
+	socket.on('test',function(data){
 		console.log(data);
-		socket.emit('my other event', { my: 'data' });
 	});
 	function drawMe() {
 		navigator.geolocation.watchPosition(function(position) {
 			var latitude = position.coords.latitude;
 			var longitude = position.coords.longitude;
+			socket.emit('addToMap',latitude+','+longitude);
 			var gLatLng = new google.maps.LatLng(latitude, longitude);
-			// socket.on('sent gLatLng',function() {
-			// 	socket.broadcast.emit('map', gLatLng);
-			// });
 			var nameLatLng = new google.maps.LatLng(latitude - 0.00004, longitude);
 			var mapOptions = {
 				center: gLatLng,
@@ -65,9 +61,6 @@ $(document).ready(function() {
 				infoBubble.addTab($("#userName").val() + ':', status);
 				infoBubble.open(map);
 			});
-
-		}, function(error) {
-			alert('Error occurred. Error code: ' + error.code);
 		});
 	};
 	drawMe();
