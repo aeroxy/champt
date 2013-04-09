@@ -1,13 +1,69 @@
 $(document).ready(function() {
 	var socket = io.connect('http://localhost');
-	socket.on('test',function(data){
-		console.log(data);
+	socket.on('meOnMap',function(latitude,longitude){
+		console.log('Mine:'+latitude+','+longitude);
+		var gLatLng = new google.maps.LatLng(latitude, longitude);
+		var mapOptions = {
+			center: gLatLng,
+			zoom: 18,
+			mapTypeId: google.maps.MapTypeId.ROADMAP,
+			draggable: false,
+			zoomControl: false,
+			scrollwheel: false,
+			disableDoubleClickZoom: true,
+			disableDefaultUI: true,
+		};
+		var map = new google.maps.Map(document.getElementById("map-canvas"),mapOptions);
+		var yourLocation = {
+			path: google.maps.SymbolPath.CIRCLE,
+			strokeColor: "#4c8f2a",
+			strokeWeight: 2,
+			fillColor: "#a2e346",
+			fillOpacity: 1,
+			scale: 6,
+		};
+		var drawCircle = new google.maps.Marker({
+			position: gLatLng,
+			icon: yourLocation,
+			map: map,
+		});
+		socket.on('reDoMap',function(latitude,longitude){
+			console.log('Others:'+latitude+','+longitude);
+			var gLatLng = new google.maps.LatLng(latitude, longitude);
+			var othersLocation = {
+				path: google.maps.SymbolPath.CIRCLE,
+				strokeColor: "#000",
+				strokeWeight: 2,
+				fillColor: "#fff",
+				fillOpacity: 1,
+				scale: 6,
+			};
+			var drawCircle = new google.maps.Marker({
+				position: gLatLng,
+				icon: othersLocation,
+				map: map,
+			});
+		});
+		// var gLatLng = new google.maps.LatLng(latitude, longitude);
+		// var othersLocation = {
+		// 	path: google.maps.SymbolPath.CIRCLE,
+		// 	strokeColor: "#000",
+		// 	strokeWeight: 2,
+		// 	fillColor: "#fff",
+		// 	fillOpacity: 1,
+		// 	scale: 6,
+		// };
+		// var drawCircle = new google.maps.Marker({
+		// 	position: gLatLng,
+		// 	icon: othersLocation,
+		// 	map: otherMap;
+		// });
 	});
 	function drawMe() {
 		navigator.geolocation.watchPosition(function(position) {
 			var latitude = position.coords.latitude;
 			var longitude = position.coords.longitude;
-			socket.emit('addToMap',latitude+','+longitude);
+			socket.emit('addToMap',latitude,longitude);
 			var gLatLng = new google.maps.LatLng(latitude, longitude);
 			var nameLatLng = new google.maps.LatLng(latitude - 0.00004, longitude);
 			var mapOptions = {

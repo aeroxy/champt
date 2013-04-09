@@ -36,9 +36,9 @@ var webSocket = io.listen(httpServer);
 
 webSocket.sockets.on('connection',function(socket){
 
-	socket.on('addToMap',function(data) {
-		console.log(data);
-		socket.broadcast.emit('test',data);
+	socket.on('addToMap',function(latitude,longitude) {
+		socket.emit('meOnMap',latitude,longitude);
+		socket.broadcast.emit('reDoMap',latitude,longitude);
 	});
 
 });
