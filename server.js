@@ -37,6 +37,7 @@ var webSocket = io.listen(httpServer);
 webSocket.sockets.on('connection',function(socket){
 
 	socket.on('addToMap',function(latitude,longitude) {
+		console.log('user location stored:'+latitude+','+longitude);
 		socket.emit('meOnMap',latitude,longitude);
 		socket.broadcast.emit('reDoMap',latitude,longitude);
 	});

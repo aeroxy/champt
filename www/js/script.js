@@ -3,6 +3,7 @@ $(document).ready(function() {
 	socket.on('meOnMap',function(latitude,longitude){
 		console.log('Mine:'+latitude+','+longitude);
 		var gLatLng = new google.maps.LatLng(latitude, longitude);
+		var nameLatLng = new google.maps.LatLng(latitude - 0.00004, longitude);
 		var mapOptions = {
 			center: gLatLng,
 			zoom: 18,
@@ -22,6 +23,16 @@ $(document).ready(function() {
 			fillOpacity: 1,
 			scale: 6,
 		};
+		var mapUserName = new MapLabel({
+			text: 'Anonymous User',
+			position: nameLatLng,
+			map: map,
+			fontSize: 14,
+			fontColor: "#ffffff",
+			strokeWeight: 4,
+			strokeColor: "4c8f2a",
+			fontFamily: "Avenir",
+		});
 		var drawCircle = new google.maps.Marker({
 			position: gLatLng,
 			icon: yourLocation,
@@ -34,7 +45,7 @@ $(document).ready(function() {
 				path: google.maps.SymbolPath.CIRCLE,
 				strokeColor: "#000",
 				strokeWeight: 2,
-				fillColor: "#fff",
+				fillColor: "#ff0000",
 				fillOpacity: 1,
 				scale: 6,
 			};
@@ -44,20 +55,6 @@ $(document).ready(function() {
 				map: map,
 			});
 		});
-		// var gLatLng = new google.maps.LatLng(latitude, longitude);
-		// var othersLocation = {
-		// 	path: google.maps.SymbolPath.CIRCLE,
-		// 	strokeColor: "#000",
-		// 	strokeWeight: 2,
-		// 	fillColor: "#fff",
-		// 	fillOpacity: 1,
-		// 	scale: 6,
-		// };
-		// var drawCircle = new google.maps.Marker({
-		// 	position: gLatLng,
-		// 	icon: othersLocation,
-		// 	map: otherMap;
-		// });
 	});
 	function drawMe() {
 		navigator.geolocation.watchPosition(function(position) {
