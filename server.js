@@ -15,8 +15,6 @@ var httpServer = http.createServer(function(req,res) {
 		cacheLoad = "./www" + url.parse(req.url).pathname;
 	}
 
-	console.log("Caching: " + cacheLoad);
-
 	var httpStatusCode = 200;
 
 	fs.exists(cacheLoad,function(statusCheck) {
@@ -27,6 +25,8 @@ var httpServer = http.createServer(function(req,res) {
 		}
 
 		var cache = fs.readFileSync(cacheLoad);
+		var mimeType = mime.lookup(cacheLoad);
+		res.writeHead(httpStatusCode,{'Content-type':mimeType});
 		res.end(cache);
 	});
 })
