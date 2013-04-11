@@ -42,4 +42,9 @@ webSocket.sockets.on('connection',function(socket){
 		socket.broadcast.emit('reDoMap',latitude,longitude);
 	});
 
+	socket.on('update',function(name,status){
+		socket.emit('meOnMap',name,status);
+		socket.broadcast.emit('reDoMap',name,status);
+	});
+
 });
