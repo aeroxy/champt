@@ -3,6 +3,7 @@ var fs = require('fs');
 var path = require('path');
 var url = require('url');
 var io = require('socket.io');
+var mime = require('mime');
 
 var httpServer = http.createServer(function(req,res) {
 	var cacheLoad;
@@ -37,14 +38,8 @@ var webSocket = io.listen(httpServer);
 webSocket.sockets.on('connection',function(socket){
 
 	socket.on('addToMap',function(latitude,longitude) {
-		console.log('user location stored:'+latitude+','+longitude);
 		socket.emit('meOnMap',latitude,longitude);
-		socket.broadcast.emit('reDoMap',latitude,longitude);
-	});
-
-	socket.on('update',function(name,status){
-		socket.emit('meOnMap',name,status);
-		socket.broadcast.emit('reDoMap',name,status);
+		socket.broadcast.emit('otherOnMap',latitude,longitude);
 	});
 
 });
