@@ -39,3 +39,9 @@ footer {
   height: 100%;
   z-index: 1;
 }
+
+.bubble {
+  color: #000;
+  font-family: 'Avenir', 'MS Trebuchet', sans-serif;
+  font-size: 16px;
+}

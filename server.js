@@ -1,9 +1,11 @@
-var http = require("http");
+var http = require('http');
 var fs = require('fs');
 var path = require('path');
 var url = require('url');
+var io = require('socket.io');
+var mime = require('mime');
 
-http.createServer(function(req,res) {
+var httpServer = http.createServer(function(req,res) {
 	var cacheLoad;
 
 	if(req.url == "/" || req.url == "") {
@@ -12,8 +14,6 @@ http.createServer(function(req,res) {
 	else {
 		cacheLoad = "./www" + url.parse(req.url).pathname;
 	}
-
-	console.log("Caching: " + cacheLoad);
 
 	var httpStatusCode = 200;
 
@@ -25,6 +25,21 @@ http.createServer(function(req,res) {
 		}
 
 		var cache = fs.readFileSync(cacheLoad);
+		var mimeType = mime.lookup(cacheLoad);
+		res.writeHead(httpStatusCode,{'Content-type':mimeType});
 		res.end(cache);
 	});
-}).listen(8000);
+})
+
+httpServer.listen(8000);
+
+var webSocket = io.listen(httpServer);
+
+webSocket.sockets.on('connection',function(socket){
+
+	socket.on('addToMap',function(latitude,longitude) {
+		socket.emit('meOnMap',latitude,longitude);
+		socket.broadcast.emit('otherOnMap',latitude,longitude);
+	});
+
+});

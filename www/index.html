@@ -6,9 +6,11 @@
 	<meta name="author" content="Aero Windwalker">
 	<link rel="stylesheet" type="text/css" href="css/normalize.css">
 	<link rel="stylesheet" type="text/css" href="css/style.css">
+	<script src="/socket.io/socket.io.js"></script>
 	<script type="text/javascript" src="js/jquery.js"></script>	
 	<script type="text/javascript" src="//maps.googleapis.com/maps/api/js?key=AIzaSyDgGDTqE88iWyf_7AgWT2Yu2sEALAnX0AU&sensor=true"></script>
 	<script type="text/javascript" src="js/maplabel-compiled.js"></script>
+	<script type="text/javascript" src="js/infobubble-compiled.js"></script>
 	<script type="text/javascript" src="js/script.js"></script>
 </head>
 	<body>
@@ -16,9 +18,11 @@
 		<div id="map-canvas"></div>
 		<footer>
 		<div>
-			<label>Change Your User Name To:</label>
 			<input type="text" id="userName" value="Anonymous User">
-			<button id="change-username">Confirm</button>
+		</div>
+		<div>
+			<textarea id="status-update">Update Your Status Here</textarea>
+			<button id="update">Update</button>
 		</div>
 		</footer>
 	</body>
