@@ -1,0 +1,129 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+/* In a layer, so utilities still win: unlayered CSS beats every layer. */
+@import "maplibre-gl/dist/maplibre-gl.css" layer(components);
+
+/*
+ * AERO app style: warm paper, near-black ink, and two accents whose
+ * meanings never swap.
+ *   action (orange): things you can click. Pins, the one main button, focus.
+ *   status (blue):   things that are true. You are here; threads alive.
+ */
+@theme {
+  --color-ink: #0b0b0b;
+  --color-ink-700: #26262a;
+  --color-ink-500: #52525b;
+  --color-ink-300: #a1a1aa;
+
+  --color-action: #d85a30;
+  --color-action-700: #c24e27;
+  --color-action-300: #eca88f;
+  --color-action-soft: #fdf3ef;
+
+  --color-status: #2e6be6;
+  --color-status-700: #1d4ca6;
+  --color-status-300: #9dbaf7;
+  --color-status-soft: #eff4fe;
+
+  --color-paper: #fcfcf9;
+  --color-surface: #ffffff;
+  --color-sunken: #fafaf8;
+  --color-muted: #f4f4f5;
+  --color-border: #e4e4e7;
+  --color-border-strong: #d4d4d8;
+  --color-fg: #0b0b0b;
+  --color-fg-2: #52525b;
+  --color-fg-3: #71717a;
+
+  --color-danger: #dc2626;
+  --color-danger-strong: #b91c1c;
+  --color-danger-soft: #fef2f2;
+
+  --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+
+  /* 10px is the control radius: buttons and inputs share it. */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+
+  /* Near-neutral shadows that fall further down than out. */
+  --shadow-xs: 0 1px 1px rgb(11 11 11 / 0.04);
+  --shadow-sm: 0 1px 0 0 rgb(11 11 11 / 0.04), 0 2px 6px rgb(11 11 11 / 0.05);
+  --shadow-md: 0 1px 0 0 rgb(11 11 11 / 0.04), 0 12px 24px -12px rgb(11 11 11 / 0.1);
+  --shadow-lg: 0 1px 0 0 rgb(11 11 11 / 0.04), 0 24px 48px -24px rgb(11 11 11 / 0.14);
+  --shadow-focus: 0 0 0 3px rgb(216 90 48 / 0.18);
+
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-paper);
+    color: var(--color-fg);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+}
+
+/* Mono micro-label: section labels, counts, timestamps. The wide tracking
+   makes them read as instrument labels, not shrunken body copy. */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-fg-3);
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A status dot with a soft halo, so "live" looks live. */
+@utility live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-status);
+  box-shadow: 0 0 0 3px rgb(46 107 230 / 0.16);
+}
+
+/* Map controls in the same edge language as the rest of the page. */
+.maplibregl-ctrl-group:not(:empty) {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.maplibregl-ctrl-attrib {
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

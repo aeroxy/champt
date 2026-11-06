@@ -1,0 +1,36 @@
+[package]
+name = "champt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+dotenvy = "0.15"
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "macros", "migrate"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = "0.5"
+uuid = { version = "1", features = ["serde"] }
+vercel_runtime = { version = "2.4", features = ["axum"] }
+
+[dev-dependencies]
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1", features = ["v4"] }
+
+# The Vercel Function. Vercel builds each `api/*.rs` as its own binary, and
+# `vercel.json` sends every `/api/*` request to this one.
+[[bin]]
+name = "server"
+path = "api/server.rs"
+
+# The same API on a local port, for development: `cargo run --bin dev`.
+[[bin]]
+name = "dev"
+path = "src/bin/dev.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3

@@ -1,0 +1,5 @@
+# Vercel builds the function and the front end itself.
+target/**
+frontend/node_modules
+frontend/dist
+.env
