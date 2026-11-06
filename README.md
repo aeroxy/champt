@@ -6,7 +6,7 @@ someone *else* replies: a reply resets the clock only when its author is not
 the one who posted last, so it takes two people taking turns to keep a thread
 alive.
 
-The 2013 version (Node and Socket.IO, live dots on a map) is on the `master`
+The 2013 version (Node and Socket.IO, live dots on a map) is on the `archive`
 branch.
 
 ## How it behaves
