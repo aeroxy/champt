@@ -12,7 +12,7 @@ The 2013 version (Node and Socket.IO, live dots on a map) is on the `archive` br
 | A thread lives 24 hours past its last turn change | one `UPDATE` in `add_message`, `src/lib.rs`; every read filters on `expires_at > now()` |
 | The map pans worldwide, the antimeridian included, and any thread can be read | `list_threads`, `BBox` in `src/geo.rs` |
 | Replies come only from within 100 km of a thread. The poster's position travels with the reply for the check and is not stored | `REPLY_RADIUS_KM` and `add_message` in `src/lib.rs`; the reply box in `frontend/src/Panel.tsx` |
-| No login yet: each browser keeps a random id, sent as `X-Champt-Author` | `Author` in `src/lib.rs`, `frontend/src/api.ts` |
+| Reading needs no account. Posting needs Sign in with Aero and a nickname: 3–20 English letters, numbers or `_`, unique ignoring case, and all anyone else sees. The email stays on the server, in `people`, for audits | `src/auth.rs`, `Author` and `valid_nickname` in `src/lib.rs`, `frontend/src/auth.ts` |
 | No live updates: Refresh reloads the pins and the open thread | `frontend/src/App.tsx` |
 
 Expired threads are deleted whenever someone starts a new one, so nothing runs on a schedule.
@@ -25,6 +25,7 @@ Expired threads are deleted whenever someone starts a new one, so nothing runs o
 | Database | Postgres. Neon works through either its pooled or its direct connection string. Migrations in `migrations/` run when a function instance starts. |
 | Front end | React 19, Vite and Tailwind 4, built with bun and served from Vercel's CDN |
 | Map | MapLibre GL with OpenFreeMap's `positron` tiles: no key, no account |
+| Sign-in | [Aero](https://aero.oops.wtf)'s Login with Aero: identity only, not OAuth. The token is PASETO `v4.local`: the visitor's email, encrypted with a key only Aero and Champt hold (`AERO_LOGIN_KEY`), valid for 30 days. The browser keeps it without being able to read it; the API decrypts it and checks its audience and times on every call that needs to know who is asking. |
 
 ## Local development
 
@@ -35,6 +36,8 @@ cd frontend && bun install && bun run dev   # http://localhost:5176, proxying /a
 ```
 
 Browsers only share location with secure pages. `localhost` counts; a LAN address over plain http does not.
+
+A sign-in can only finish on the callback registered with Aero, which is the production site, so locally you can read but not post. To post locally, put `AERO_LOGIN_KEY` in `.env` and copy `champt.session` from the production site's localStorage into localhost's: the token is addressed to Champt, not to a domain.
 
 ## Tests
 
@@ -50,7 +53,8 @@ The API tests write rows and leave them, so give them a throwaway database. With
 
 1. Import the GitHub repository as a Vercel project. `vercel.json` does the rest: bun builds `frontend/` into static files, Vercel builds `api/server.rs` as a function, and `/api/*` is rewritten to it.
 2. Give it a Postgres database as `DATABASE_URL`, in AWS Singapore (`aws-ap-southeast-1`) to match the `sin1` function region in `vercel.json`, since every API call makes several round trips to it. Add Neon from the project's Storage tab (it sets the variable for you), or paste a connection string into the project's environment variables.
-3. Deploy, or push to the production branch. The first request runs the migrations.
+3. Register Champt on [Aero's Connect page](https://aero.oops.wtf/connect) under Login with Aero, with the callback `https://<your domain>/auth/aero`. Aero shows a `k4.local.…` key once: set it as `AERO_LOGIN_KEY` in the project's environment variables, never in the repo. Once the registration is approved, put its client id in `AERO_CLIENT_ID`, in both `src/auth.rs` and `frontend/src/auth.ts`. Until both are in place every sign-in is refused, so nobody can post. A lost key means deleting the app on Aero and registering again.
+4. Deploy, or push to the production branch. The first request runs the migrations.
 
 ## API
 
@@ -58,7 +62,22 @@ The API tests write rows and leave them, so give them a throwaway database. With
 |---|---|---|---|
 | `GET` | `/api/threads?bbox=w,s,e,n` | | `{ threads: [{ id, lat, lng, preview, messages, expires_at }] }`: live threads in view, the most recently extended first, at most 500 |
 | `GET` | `/api/threads/{id}` | | the thread and its messages, or 404 once it has expired |
-| `POST` | `/api/threads` | `{ lat, lng, name, body }` | 201 and the new thread |
-| `POST` | `/api/threads/{id}/messages` | `{ name, body, lat, lng }` | 201 and the thread; 403 if the poster is over 100 km away; 404 if it has expired |
+| `POST` | `/api/threads` | `{ lat, lng, body }` | 201 and the new thread; 403 without a nickname |
+| `POST` | `/api/threads/{id}/messages` | `{ body, lat, lng }` | 201 and the thread; 403 without a nickname or from over 100 km away; 404 if it has expired |
+| `GET` | `/api/me` | | `{ nickname }` of whoever is signed in, null until they choose one; 401 when signed out. The page can't open its own token |
+| `PUT` | `/api/me` | `{ nickname }` | 200 and `{ nickname }`; 400 if it breaks the rules; 409 if someone has it. Changing it frees the old one |
 
-Posting needs the `X-Champt-Author` header, a UUID. A thread tells each reader which messages are theirs (`mine`), whether their reply would reset the clock (`reply_extends`), and how far away a reply may come from (`reply_radius_km`); author ids never leave the server. Names run up to 32 characters and messages up to 500. Errors come back as `{ error }`.
+Posting needs `Authorization: Bearer <token>` with a token from Sign in with Aero. Without one, or with one that fails its checks, the answer is 401; so is a thread read with a failing token, which tells the page to sign in again. A thread tells each reader which messages are theirs (`mine`), whether their reply would reset the clock (`reply_extends`), and how far away a reply may come from (`reply_radius_km`); author ids and emails never leave the server. A message shows its author's current nickname. Messages run up to 500 characters. Errors come back as `{ error }`.
+
+## Auditing
+
+Who wrote what, with their Aero email, from Neon's SQL editor:
+
+```sql
+SELECT m.created_at, p.nickname, p.email, m.body
+  FROM messages m
+  JOIN people p ON p.id = m.author_id
+ ORDER BY m.created_at DESC;
+```
+
+Messages go with their threads. `people` keeps each person's email and nickname, which is what holds a nickname for them.

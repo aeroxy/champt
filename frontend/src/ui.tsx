@@ -50,3 +50,16 @@ export function Chip({ children }: { children: ReactNode }) {
     </span>
   )
 }
+
+/** A quiet text-only button, for small actions inside a line of text. */
+export function TextButton({ className = '', ...rest }: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      className={
+        'shrink-0 rounded-xs font-medium text-fg-2 hover:text-fg hover:underline ' +
+        `focus-visible:shadow-focus focus-visible:outline-none ${className}`
+      }
+      {...rest}
+    />
+  )
+}

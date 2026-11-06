@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { LocateFixed, Plus, RefreshCw } from 'lucide-react'
-import { type Pin, type Thread, ApiError, api, problem, saveName, savedName } from './api'
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { LocateFixed, LogIn, Plus, RefreshCw } from 'lucide-react'
+import { type Me, type Pin, type Thread, ApiError, api, problem } from './api'
+import { type Session, currentSession, onSignOut, signIn, signOut } from './auth'
 import { type Focus, MapView, type Spot } from './MapView'
 import { ComposePanel, PickPanel, ThreadPanel, type View } from './Panel'
-import { Button, Chip, LiveChip } from './ui'
+import { Button, Chip, LiveChip, TextButton } from './ui'
 
 /** Threads are pinned to a 0.001° grid (about 100 m); the server snaps too. */
 const snap = (x: number) => Math.round(x * 1000) / 1000
@@ -20,8 +21,31 @@ export function App() {
   const [me, setMe] = useState<Spot | null>(null)
   const [location, setLocation] = useState<Location>('locating')
   const [focus, setFocus] = useState<Focus | null>(null)
-  const [name, setName] = useState(savedName)
+  const [session, setSession] = useState<Session | null>(currentSession)
   const bbox = useRef<string | null>(null)
+
+  /** Who the API says is signed in; null while unknown. */
+  const [account, setAccount] = useState<Me | null>(null)
+  const [naming, setNaming] = useState(false)
+
+  // Signing out, or the API refusing the token, ends the session here too.
+  useEffect(() => onSignOut(() => setSession(null)), [])
+
+  // Only the API can open the token, so ask it who this is. A refused token
+  // signs out on the way (see api.ts).
+  useEffect(() => {
+    setAccount(null)
+    setNaming(false)
+    if (!session) return
+    let current = true
+    api
+      .me()
+      .then((me) => current && setAccount(me))
+      .catch(() => {})
+    return () => {
+      current = false
+    }
+  }, [session])
   const pinsRequest = useRef<AbortController | null>(null)
 
   // Follow the person's position, and fly there the first time it arrives.
@@ -102,16 +126,9 @@ export function App() {
     if (view.kind === 'thread') openThread(view.id)
   }
 
-  function rename(next: string) {
-    setName(next)
-    saveName(next)
-  }
-
-  const author = () => name.trim() || 'Anonymous'
-
   async function start(body: string) {
     if (!me) throw new ApiError('Your location is not known yet.', 0)
-    const created = await api.start({ lat: snap(me.lat), lng: snap(me.lng), name: author(), body })
+    const created = await api.start({ lat: snap(me.lat), lng: snap(me.lng), body })
     setThread(created)
     setThreadError(null)
     setView({ kind: 'thread', id: created.id })
@@ -122,7 +139,7 @@ export function App() {
     if (view.kind !== 'thread') return
     if (!me) throw new ApiError('Your location is not known yet.', 0)
     try {
-      setThread(await api.reply(view.id, { name: author(), body, lat: snap(me.lat), lng: snap(me.lng) }))
+      setThread(await api.reply(view.id, { body, lat: snap(me.lat), lng: snap(me.lng) }))
       loadPins()
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
@@ -187,16 +204,55 @@ export function App() {
           {location === 'off' && <Chip>Location off</Chip>}
         </div>
 
-        {view.kind !== 'compose' && (
-          <Button
-            variant="accent"
-            className="mt-3 w-full"
-            disabled={!me}
-            title={me ? undefined : 'Allow location access to start a thread'}
-            onClick={() => setView({ kind: 'compose' })}
-          >
-            <Plus className="size-4" />
-            Start a thread here
+        {session ? (
+          <>
+            {account && (account.nickname === null || naming) ? (
+              <NicknameForm
+                current={account.nickname}
+                onSaved={(next) => {
+                  setAccount(next)
+                  setNaming(false)
+                }}
+                onCancel={account.nickname ? () => setNaming(false) : undefined}
+              />
+            ) : (
+              view.kind !== 'compose' && (
+              <Button
+                variant="accent"
+                className="mt-3 w-full"
+                disabled={!me}
+                title={me ? undefined : 'Allow location access to start a thread'}
+                onClick={() => setView({ kind: 'compose' })}
+              >
+                <Plus className="size-4" />
+                Start a thread here
+              </Button>
+              )
+            )}
+            <p className="mt-3 flex min-w-0 items-center gap-1.5 text-[12px] text-fg-3">
+              <span className="truncate">
+                {account?.nickname ? (
+                  <>
+                    Signed in as <span className="font-mono text-fg-2">{account.nickname}</span>
+                  </>
+                ) : (
+                  'Signed in'
+                )}
+              </span>
+              {account?.nickname && !naming && (
+                <>
+                  <span aria-hidden>·</span>
+                  <TextButton onClick={() => setNaming(true)}>Change</TextButton>
+                </>
+              )}
+              <span aria-hidden>·</span>
+              <TextButton onClick={signOut}>Sign out</TextButton>
+            </p>
+          </>
+        ) : (
+          <Button variant="accent" className="mt-3 w-full" onClick={signIn}>
+            <LogIn className="size-4" />
+            Sign in with Aero
           </Button>
         )}
       </header>
@@ -208,16 +264,89 @@ export function App() {
           error={threadError}
           now={now}
           me={me}
-          name={name}
-          onName={rename}
+          signedIn={session !== null}
+          nickname={account?.nickname ?? null}
           onReply={reply}
           onClose={close}
         />
       )}
       {view.kind === 'compose' && (
-        <ComposePanel canPost={me !== null} name={name} onName={rename} onStart={start} onClose={close} />
+        <ComposePanel
+          canPost={me !== null}
+          signedIn={session !== null}
+          nickname={account?.nickname ?? null}
+          onStart={start}
+          onClose={close}
+        />
       )}
     </div>
+  )
+}
+
+/** Choosing or changing a nickname: the name others see instead of an email. */
+function NicknameForm({
+  current,
+  onSaved,
+  onCancel,
+}: {
+  current: string | null
+  onSaved: (me: Me) => void
+  onCancel?: () => void
+}) {
+  const [text, setText] = useState(current ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // The API's rules, so Save only lights up for a name it could accept.
+  const fits = /^[A-Za-z0-9_]{3,20}$/.test(text.trim())
+
+  async function save(event: FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      onSaved(await api.setNickname(text.trim()))
+    } catch (e) {
+      setError(problem(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mt-3">
+      <label htmlFor="nickname" className="eyebrow">
+        {current ? 'Change your nickname' : 'Choose a nickname'}
+      </label>
+      <div className="mt-1.5 flex gap-2">
+        <input
+          id="nickname"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          maxLength={20}
+          autoFocus
+          autoComplete="username"
+          spellCheck={false}
+          placeholder="ada_l"
+          className="h-10 min-w-0 flex-1 rounded-md border border-border bg-surface px-3 font-mono text-sm text-fg transition duration-200 ease-out placeholder:text-fg-3 focus:border-action focus:shadow-focus focus:outline-none"
+        />
+        <Button type="submit" variant="accent" disabled={busy || !fits}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+        {onCancel && (
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+      </div>
+      <p className="mt-1.5 text-[12px] text-fg-3">
+        3–20 English letters, numbers or _. Others see it instead of your email.
+      </p>
+      {error && (
+        <p role="alert" className="mt-2 rounded-sm bg-danger-soft px-3 py-2 text-[12px] text-danger-strong">
+          {error}
+        </p>
+      )}
+    </form>
   )
 }
 

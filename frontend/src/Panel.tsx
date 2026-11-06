@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { type Pin, type Thread, problem } from './api'
+import { signIn } from './auth'
 import { ago, distanceKm, timeLeft } from './format'
 import type { Spot } from './MapView'
 import { Button, LiveChip } from './ui'
@@ -70,8 +71,8 @@ export function ThreadPanel({
   error,
   now,
   me,
-  name,
-  onName,
+  signedIn,
+  nickname,
   onReply,
   onClose,
 }: {
@@ -79,8 +80,9 @@ export function ThreadPanel({
   error: string | null
   now: number
   me: Spot | null
-  name: string
-  onName: (name: string) => void
+  signedIn: boolean
+  /** Null until the signed-in person chooses one. */
+  nickname: string | null
   onReply: (body: string) => Promise<void>
   onClose: () => void
 }) {
@@ -130,10 +132,9 @@ export function ThreadPanel({
               </li>
             ))}
           </ol>
-          <ReplyArea thread={thread} me={me}>
+          <ReplyArea thread={thread} me={me} signedIn={signedIn} nickname={nickname}>
             <Composer
-              name={name}
-              onName={onName}
+              nickname={nickname ?? ''}
               placeholder="Reply…"
               submit="Reply"
               variant="primary"
@@ -151,11 +152,29 @@ export function ThreadPanel({
   )
 }
 
-/** The reply box when the thread is within reach, otherwise why it is read only. */
-function ReplyArea({ thread, me, children }: { thread: Thread; me: Spot | null; children: ReactNode }) {
+/** The reply box when the thread is within reach; otherwise why it is read only. */
+function ReplyArea({
+  thread,
+  me,
+  signedIn,
+  nickname,
+  children,
+}: {
+  thread: Thread
+  me: Spot | null
+  signedIn: boolean
+  nickname: string | null
+  children: ReactNode
+}) {
   const radius = thread.reply_radius_km
   const away = me ? distanceKm(me, thread) : null
-  if (away !== null && away <= radius) return <>{children}</>
+  if (away !== null && away <= radius) {
+    return (
+      <AccountGate signedIn={signedIn} nickname={nickname} to="reply">
+        {children}
+      </AccountGate>
+    )
+  }
   return (
     <div className="border-t border-border bg-sunken px-5 py-4">
       <p className="eyebrow">Read only</p>
@@ -168,16 +187,49 @@ function ReplyArea({ thread, me, children }: { thread: Thread; me: Spot | null; 
   )
 }
 
+/** What stands between someone and posting: a sign-in, then a nickname. */
+function AccountGate({
+  signedIn,
+  nickname,
+  to,
+  children,
+}: {
+  signedIn: boolean
+  nickname: string | null
+  to: string
+  children: ReactNode
+}) {
+  if (!signedIn) return <SignInPrompt to={to} />
+  if (!nickname) {
+    return (
+      <p className="border-t border-border bg-sunken px-5 py-4 text-[13px] text-fg-2">
+        Choose a nickname at the top to {to}. It is what others see, instead of your email.
+      </p>
+    )
+  }
+  return <>{children}</>
+}
+
+/** Where a reply box would be, for someone who isn't signed in. */
+function SignInPrompt({ to }: { to: string }) {
+  return (
+    <div className="flex items-center gap-3 border-t border-border bg-sunken px-5 py-4">
+      <p className="min-w-0 flex-1 text-[13px] text-fg-2">Sign in with Aero to {to}.</p>
+      <Button onClick={signIn}>Sign in</Button>
+    </div>
+  )
+}
+
 export function ComposePanel({
   canPost,
-  name,
-  onName,
+  signedIn,
+  nickname,
   onStart,
   onClose,
 }: {
   canPost: boolean
-  name: string
-  onName: (name: string) => void
+  signedIn: boolean
+  nickname: string | null
   onStart: (body: string) => Promise<void>
   onClose: () => void
 }) {
@@ -187,28 +239,28 @@ export function ComposePanel({
         It is pinned within about 100 m of you, and anyone can read it. It disappears after 24 hours unless someone
         else replies.
       </p>
-      {canPost ? (
-        <Composer
-          name={name}
-          onName={onName}
-          placeholder="What's happening here?"
-          submit="Post"
-          variant="accent"
-          autoFocus
-          onSubmit={onStart}
-        />
-      ) : (
-        <p className="border-t border-border bg-sunken px-5 py-4 text-[13px] text-fg-2">
-          Allow location access to start a thread where you are.
-        </p>
-      )}
+      <AccountGate signedIn={signedIn} nickname={nickname} to="start a thread">
+        {canPost ? (
+          <Composer
+            nickname={nickname ?? ''}
+            placeholder="What's happening here?"
+            submit="Post"
+            variant="accent"
+            autoFocus
+            onSubmit={onStart}
+          />
+        ) : (
+          <p className="border-t border-border bg-sunken px-5 py-4 text-[13px] text-fg-2">
+            Allow location access to start a thread where you are.
+          </p>
+        )}
+      </AccountGate>
     </Shell>
   )
 }
 
 function Composer({
-  name,
-  onName,
+  nickname,
   placeholder,
   submit,
   variant,
@@ -216,8 +268,7 @@ function Composer({
   autoFocus,
   onSubmit,
 }: {
-  name: string
-  onName: (name: string) => void
+  nickname: string
   placeholder: string
   submit: string
   variant: 'primary' | 'accent'
@@ -269,18 +320,9 @@ function Composer({
         className={`block w-full resize-none px-3 py-2 ${field}`}
       />
       <div className="mt-2 flex items-center gap-2">
-        <label htmlFor="name" className="eyebrow shrink-0">
-          As
-        </label>
-        <input
-          id="name"
-          value={name}
-          onChange={(e) => onName(e.target.value)}
-          maxLength={32}
-          placeholder="Anonymous"
-          autoComplete="nickname"
-          className={`h-10 min-w-0 flex-1 px-3 ${field}`}
-        />
+        <span className="min-w-0 flex-1 truncate text-[12px] text-fg-3">
+          as <span className="font-mono text-fg-2">{nickname}</span>
+        </span>
         <Button type="submit" variant={variant} disabled={busy || !text.trim()}>
           {busy ? 'Posting…' : submit}
         </Button>

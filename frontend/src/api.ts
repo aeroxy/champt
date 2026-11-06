@@ -1,6 +1,7 @@
-// Talks to the Rust API under /api. Until there is a login, a random id kept
-// in this browser (sent as X-Champt-Author) is what tells one person from
-// another, and so decides whether a reply resets a thread's clock.
+// Talks to the Rust API under /api. Calls carry the Aero sign-in, when there
+// is one, as a bearer token, and the API decides who that is.
+
+import { currentSession, signOut } from './auth'
 
 export type Pin = {
   id: number
@@ -32,38 +33,8 @@ export type Thread = {
   messages: Message[]
 }
 
-const ID_KEY = 'champt.author'
-const NAME_KEY = 'champt.name'
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-// Storage can throw (private windows, blocked site data). Without it the id
-// lasts for this page load only, which is still enough to post.
-function read(key: string): string | null {
-  try {
-    return localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function write(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value)
-  } catch {
-    // Keep going without it.
-  }
-}
-
-const authorId = (() => {
-  const stored = read(ID_KEY)
-  if (stored && UUID.test(stored)) return stored
-  const id = crypto.randomUUID()
-  write(ID_KEY, id)
-  return id
-})()
-
-export const savedName = () => read(NAME_KEY) ?? ''
-export const saveName = (name: string) => write(NAME_KEY, name)
+/** The signed-in person as others see them. Posting needs a nickname. */
+export type Me = { nickname: string | null }
 
 export class ApiError extends Error {
   constructor(
@@ -74,17 +45,26 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(path: string, options: { body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+type Options = { body?: unknown; method?: 'POST' | 'PUT'; signal?: AbortSignal }
+
+async function call<T>(path: string, options: Options = {}): Promise<T> {
   const posting = options.body !== undefined
+  const session = currentSession()
   const response = await fetch(path, {
-    method: posting ? 'POST' : 'GET',
+    method: posting ? (options.method ?? 'POST') : 'GET',
     headers: {
-      'X-Champt-Author': authorId,
+      ...(session ? { Authorization: `Bearer ${session.token}` } : {}),
       ...(posting ? { 'Content-Type': 'application/json' } : {}),
     },
     body: posting ? JSON.stringify(options.body) : undefined,
     signal: options.signal,
   })
+  if (response.status === 401 && session) {
+    // The API refused the sign-in, so forget it. A read works signed out and
+    // goes again without it; a post tells the person to sign in again.
+    signOut()
+    if (!posting) return call<T>(path, options)
+  }
   const data = await response.json().catch(() => null)
   if (!response.ok) {
     throw new ApiError(data?.error ?? `The server answered ${response.status}.`, response.status)
@@ -97,10 +77,13 @@ export const api = {
   pins: (bbox: string, signal?: AbortSignal) =>
     call<{ threads: Pin[] }>(`/api/threads?bbox=${bbox}`, { signal }).then((list) => list.threads),
   thread: (id: number) => call<Thread>(`/api/threads/${id}`),
-  start: (thread: { lat: number; lng: number; name: string; body: string }) =>
-    call<Thread>('/api/threads', { body: thread }),
+  /** Who is signed in, as others see them: the page can't open the token itself. */
+  me: () => call<Me>('/api/me'),
+  /** Chooses or changes the nickname; 409 if someone has it. */
+  setNickname: (nickname: string) => call<Me>('/api/me', { body: { nickname }, method: 'PUT' }),
+  start: (thread: { lat: number; lng: number; body: string }) => call<Thread>('/api/threads', { body: thread }),
   /** `lat`/`lng` is where the poster is, checked against the reply radius and not stored. */
-  reply: (id: number, message: { name: string; body: string; lat: number; lng: number }) =>
+  reply: (id: number, message: { body: string; lat: number; lng: number }) =>
     call<Thread>(`/api/threads/${id}/messages`, { body: message }),
 }
 
