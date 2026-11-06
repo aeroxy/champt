@@ -17,6 +17,19 @@ pub fn snap(lat: f64, lng: f64) -> Result<(f64, f64), &'static str> {
     Ok((round(lat), round(wrap(lng))))
 }
 
+/// Mean radius of the Earth, in km.
+const EARTH_RADIUS_KM: f64 = 6371.0;
+
+/// Great-circle distance between two `(lat, lng)` positions, in km
+/// (haversine). Correct across the antimeridian without special cases.
+pub fn distance_km((lat1, lng1): (f64, f64), (lat2, lng2): (f64, f64)) -> f64 {
+    let (phi1, phi2) = (lat1.to_radians(), lat2.to_radians());
+    let half_dphi = (lat2 - lat1).to_radians() / 2.0;
+    let half_dlambda = (lng2 - lng1).to_radians() / 2.0;
+    let a = half_dphi.sin().powi(2) + phi1.cos() * phi2.cos() * half_dlambda.sin().powi(2);
+    2.0 * EARTH_RADIUS_KM * a.sqrt().asin()
+}
+
 /// Brings any longitude into [-180, 180). One already in range is returned
 /// untouched: the arithmetic would nudge 2.2 to 2.1999999999999886.
 fn wrap(lng: f64) -> f64 {
@@ -84,6 +97,19 @@ mod tests {
         assert!(snap(86.0, 0.0).is_err());
         assert!(snap(0.0, 181.0).is_err());
         assert!(snap(f64::NAN, 0.0).is_err());
+    }
+
+    #[test]
+    fn measures_great_circle_distances() {
+        let paris = (48.8566, 2.3522);
+        let london = (51.5074, -0.1278);
+        let d = distance_km(paris, london);
+        assert!((343.0..344.5).contains(&d), "{d}");
+        // A degree of longitude on the equator.
+        assert!((distance_km((0.0, 0.0), (0.0, 1.0)) - 111.19).abs() < 0.01);
+        // Across the antimeridian: 0.2° apart, not 359.8°.
+        assert!((distance_km((0.0, 179.9), (0.0, -179.9)) - 22.24).abs() < 0.01);
+        assert_eq!(distance_km(paris, paris), 0.0);
     }
 
     #[test]

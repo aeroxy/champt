@@ -52,10 +52,14 @@ async fn start(app: &Router, author: Uuid, lat: f64, lng: f64) -> i64 {
     thread["id"].as_i64().unwrap()
 }
 
-async fn reply(app: &Router, id: i64, author: Uuid, body: &str) -> (StatusCode, Value) {
+/// Replies from `at`, a `(lat, lng)` position.
+async fn reply(app: &Router, id: i64, author: Uuid, body: &str, at: (f64, f64)) -> (StatusCode, Value) {
     let uri = format!("/api/threads/{id}/messages");
-    call(app, "POST", &uri, Some(author), Some(json!({ "name": "x", "body": body }))).await
+    let message = json!({ "name": "x", "body": body, "lat": at.0, "lng": at.1 });
+    call(app, "POST", &uri, Some(author), Some(message)).await
 }
+
+const PARIS: (f64, f64) = (48.858, 2.294);
 
 async fn seconds_left(pool: &PgPool, id: i64) -> f64 {
     let (secs,): (f64,) =
@@ -86,27 +90,27 @@ const FRESH: f64 = 23.9 * 3600.0;
 async fn only_a_change_of_turn_resets_the_clock() {
     let Some((app, pool)) = setup().await else { return };
     let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
-    let id = start(&app, a, 48.858, 2.294).await;
+    let id = start(&app, a, PARIS.0, PARIS.1).await;
     assert!(seconds_left(&pool, id).await > FRESH);
 
     // The starter talking to themselves buys no time...
     age(&pool, id).await;
-    let (status, thread) = reply(&app, id, a, "anyone?").await;
+    let (status, thread) = reply(&app, id, a, "anyone?", PARIS).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(thread["reply_extends"], false);
     assert!(seconds_left(&pool, id).await < 3600.0);
 
     // ...someone else answering does.
-    let (status, thread) = reply(&app, id, b, "hi!").await;
+    let (status, thread) = reply(&app, id, b, "hi!", PARIS).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(thread["reply_extends"], false); // b is now the last to post
     assert!(seconds_left(&pool, id).await > FRESH);
 
     // The same with the roles swapped.
     age(&pool, id).await;
-    reply(&app, id, b, "still here").await;
+    reply(&app, id, b, "still here", PARIS).await;
     assert!(seconds_left(&pool, id).await < 3600.0);
-    reply(&app, id, a, "me too").await;
+    reply(&app, id, a, "me too", PARIS).await;
     assert!(seconds_left(&pool, id).await > FRESH);
 
     // Each reader learns whether their reply would count, and which messages are theirs.
@@ -138,7 +142,7 @@ async fn an_expired_thread_is_gone() {
 
     let (status, _) = call(&app, "GET", &format!("/api/threads/{id}"), Some(a), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = reply(&app, id, b, "too late").await;
+    let (status, _) = reply(&app, id, b, "too late", (-33.857, 151.215)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (_, list) = call(&app, "GET", "/api/threads?bbox=151,-34,152,-33", None, None).await;
     assert!(!ids(&list).contains(&id));
@@ -151,6 +155,35 @@ async fn an_expired_thread_is_gone() {
         .await
         .unwrap();
     assert_eq!(left, 0);
+}
+
+#[tokio::test]
+async fn only_people_within_100_km_can_reply() {
+    let Some((app, _)) = setup().await else { return };
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    let id = start(&app, a, PARIS.0, PARIS.1).await;
+
+    // About 94 km north: within reach.
+    let (status, thread) = reply(&app, id, b, "close enough", (49.7, 2.294)).await;
+    assert_eq!(status, StatusCode::CREATED, "{thread}");
+    assert_eq!(thread["reply_radius_km"], 100.0);
+
+    // About 105 km north: refused, with the distance in the message.
+    let (status, body) = reply(&app, id, b, "too far", (49.8, 2.294)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("within 100 km") && error.contains("105 km away"), "{error}");
+
+    // No position at all.
+    let uri = format!("/api/threads/{id}/messages");
+    let (status, body) = call(&app, "POST", &uri, Some(b), Some(json!({ "name": "x", "body": "hi" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("location"));
+
+    // Only the reply from within reach was posted, and reading is open to all.
+    let (status, thread) = call(&app, "GET", &format!("/api/threads/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(thread["messages"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]

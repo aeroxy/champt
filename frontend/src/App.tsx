@@ -120,8 +120,9 @@ export function App() {
 
   async function reply(body: string) {
     if (view.kind !== 'thread') return
+    if (!me) throw new ApiError('Your location is not known yet.', 0)
     try {
-      setThread(await api.reply(view.id, { name: author(), body }))
+      setThread(await api.reply(view.id, { name: author(), body, lat: snap(me.lat), lng: snap(me.lng) }))
       loadPins()
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
@@ -206,6 +207,7 @@ export function App() {
           thread={thread}
           error={threadError}
           now={now}
+          me={me}
           name={name}
           onName={rename}
           onReply={reply}

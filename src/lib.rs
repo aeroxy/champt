@@ -6,6 +6,10 @@
 //! one alive alone. Every read filters on `expires_at > now()`, so nothing
 //! runs on a schedule; dead threads are deleted whenever a new one starts.
 //!
+//! Anyone can read any thread, but only people within [`REPLY_RADIUS_KM`] of
+//! it can reply. A reply carries the poster's position for that check, and
+//! the position is not stored.
+//!
 //! There is no login yet. Each browser sends a random id in the
 //! `X-Champt-Author` header, and that id is what "a different person" means.
 //! Login replaces [`Author`]'s extractor; the queries stay as they are.
@@ -30,6 +34,10 @@ use crate::geo::BBox;
 
 /// Header carrying the poster's id until there is a login.
 pub const AUTHOR_HEADER: &str = "x-champt-author";
+
+/// How far from a thread someone may be and still reply to it. Each thread
+/// response carries it, so the page never keeps its own copy.
+pub const REPLY_RADIUS_KM: f64 = 100.0;
 
 const NAME_MAX: usize = 32;
 const BODY_MAX: usize = 500;
@@ -107,6 +115,8 @@ impl<S: Send + Sync> FromRequestParts<S> for Author {
 
 pub enum ApiError {
     BadRequest(String),
+    /// Understood, but not allowed from where the poster is.
+    Forbidden(String),
     /// Never existed, or expired: to a visitor the two look the same.
     NotFound,
     Internal,
@@ -116,6 +126,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            ApiError::Forbidden(message) => (StatusCode::FORBIDDEN, message),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "This thread has expired.".to_owned()),
             ApiError::Internal => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong. Try again.".to_owned())
@@ -196,6 +207,8 @@ struct Thread {
     /// Whether a post from the asker would reset the clock: true unless they
     /// posted last.
     reply_extends: bool,
+    /// Replies must come from within this distance of the thread.
+    reply_radius_km: f64,
     messages: Vec<Message>,
 }
 
@@ -256,6 +269,7 @@ async fn load_thread(pool: &PgPool, id: i64, viewer: Option<Uuid>) -> Result<Thr
         created_at,
         expires_at,
         reply_extends: viewer != Some(last_author),
+        reply_radius_km: REPLY_RADIUS_KM,
         messages,
     })
 }
@@ -312,11 +326,15 @@ async fn create_thread(
 struct NewMessage {
     name: String,
     body: String,
+    /// Where the poster is, for the reply radius. Optional here so that a
+    /// missing position gets a clear answer instead of a parse error.
+    lat: Option<f64>,
+    lng: Option<f64>,
 }
 
-/// The turn rule lives in this one statement: the clock resets only when the
-/// poster is not `last_author`. The row lock on `threads` orders concurrent
-/// replies, so each sees the author the previous one left behind.
+/// The turn rule lives in the one statement below: the clock resets only
+/// when the poster is not `last_author`. The row lock on `threads` orders
+/// concurrent replies, so each sees the author the previous one left behind.
 async fn add_message(
     State(pool): State<PgPool>,
     Path(id): Path<i64>,
@@ -324,9 +342,30 @@ async fn add_message(
     Json(new): Json<NewMessage>,
 ) -> Result<(StatusCode, Json<Thread>), ApiError> {
     let author = author.required()?;
+    let (Some(lat), Some(lng)) = (new.lat, new.lng) else {
+        return Err(ApiError::BadRequest("Share your location to reply.".to_owned()));
+    };
+    let here = geo::snap(lat, lng).map_err(|e| ApiError::BadRequest(e.to_owned()))?;
     let name = clean(&new.name, NAME_MAX, "name")?;
     let body = clean(&new.body, BODY_MAX, "message")?;
 
+    let pin: Option<(f64, f64)> =
+        sqlx::query_as("SELECT lat, lng FROM threads WHERE id = $1 AND expires_at > now()")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await?;
+    let Some(pin) = pin else {
+        return Err(ApiError::NotFound);
+    };
+    let away = geo::distance_km(here, pin);
+    if away > REPLY_RADIUS_KM {
+        return Err(ApiError::Forbidden(format!(
+            "You can reply to threads within {REPLY_RADIUS_KM:.0} km of you. This one is {away:.0} km away."
+        )));
+    }
+
+    // If the thread expires between that check and this statement, the
+    // statement matches nothing and the reply is a 404 like any other.
     let posted: Option<(i64,)> = sqlx::query_as(
         "WITH thread AS (
              UPDATE threads

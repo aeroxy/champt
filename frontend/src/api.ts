@@ -27,6 +27,8 @@ export type Thread = {
   expires_at: string
   /** Whether a reply from this browser would reset the clock. */
   reply_extends: boolean
+  /** Replies must come from within this distance of the thread. */
+  reply_radius_km: number
   messages: Message[]
 }
 
@@ -97,7 +99,8 @@ export const api = {
   thread: (id: number) => call<Thread>(`/api/threads/${id}`),
   start: (thread: { lat: number; lng: number; name: string; body: string }) =>
     call<Thread>('/api/threads', { body: thread }),
-  reply: (id: number, message: { name: string; body: string }) =>
+  /** `lat`/`lng` is where the poster is, checked against the reply radius and not stored. */
+  reply: (id: number, message: { name: string; body: string; lat: number; lng: number }) =>
     call<Thread>(`/api/threads/${id}/messages`, { body: message }),
 }
 

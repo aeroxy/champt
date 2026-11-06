@@ -1,5 +1,17 @@
 const MINUTE = 60_000
 const DAY = 24 * 60 * MINUTE
+const EARTH_RADIUS_KM = 6371
+
+type LatLng = { lat: number; lng: number }
+
+/** Great-circle distance in km (haversine), the same sum the server does. */
+export function distanceKm(a: LatLng, b: LatLng): number {
+  const rad = Math.PI / 180
+  const halfDLat = ((b.lat - a.lat) * rad) / 2
+  const halfDLng = ((b.lng - a.lng) * rad) / 2
+  const h = Math.sin(halfDLat) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(halfDLng) ** 2
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(h))
+}
 
 /** "23h 04m left", "12m left", "<1m left". */
 export function timeLeft(expiresAt: string, now: number): string {

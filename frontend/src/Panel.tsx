@@ -1,7 +1,8 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { type Pin, type Thread, problem } from './api'
-import { ago, timeLeft } from './format'
+import { ago, distanceKm, timeLeft } from './format'
+import type { Spot } from './MapView'
 import { Button, LiveChip } from './ui'
 
 export type View =
@@ -68,6 +69,7 @@ export function ThreadPanel({
   thread,
   error,
   now,
+  me,
   name,
   onName,
   onReply,
@@ -76,6 +78,7 @@ export function ThreadPanel({
   thread: Thread | null
   error: string | null
   now: number
+  me: Spot | null
   name: string
   onName: (name: string) => void
   onReply: (body: string) => Promise<void>
@@ -127,22 +130,41 @@ export function ThreadPanel({
               </li>
             ))}
           </ol>
-          <Composer
-            name={name}
-            onName={onName}
-            placeholder="Reply…"
-            submit="Reply"
-            variant="primary"
-            hint={
-              thread.reply_extends
-                ? 'Your reply resets the clock to 24 hours.'
-                : 'You posted last. The clock resets only when someone else replies.'
-            }
-            onSubmit={onReply}
-          />
+          <ReplyArea thread={thread} me={me}>
+            <Composer
+              name={name}
+              onName={onName}
+              placeholder="Reply…"
+              submit="Reply"
+              variant="primary"
+              hint={
+                thread.reply_extends
+                  ? 'Your reply resets the clock to 24 hours.'
+                  : 'You posted last. The clock resets only when someone else replies.'
+              }
+              onSubmit={onReply}
+            />
+          </ReplyArea>
         </>
       )}
     </Shell>
+  )
+}
+
+/** The reply box when the thread is within reach, otherwise why it is read only. */
+function ReplyArea({ thread, me, children }: { thread: Thread; me: Spot | null; children: ReactNode }) {
+  const radius = thread.reply_radius_km
+  const away = me ? distanceKm(me, thread) : null
+  if (away !== null && away <= radius) return <>{children}</>
+  return (
+    <div className="border-t border-border bg-sunken px-5 py-4">
+      <p className="eyebrow">Read only</p>
+      <p className="mt-1 text-[13px] text-fg-2">
+        {away === null
+          ? `Allow location access to reply. You can reply to threads within ${radius} km of you.`
+          : `This thread is ${Math.round(away)} km away. You can reply to threads within ${radius} km of you.`}
+      </p>
+    </div>
   )
 }
 
