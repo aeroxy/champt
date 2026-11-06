@@ -3,5 +3,6 @@
   "installCommand": "cd frontend && bun install --frozen-lockfile",
   "buildCommand": "cd frontend && bun run build",
   "outputDirectory": "frontend/dist",
+  "regions": ["sin1"],
   "rewrites": [{ "source": "/api/(.*)", "destination": "/api/server" }]
 }
