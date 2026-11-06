@@ -5,8 +5,7 @@
 @import "maplibre-gl/dist/maplibre-gl.css" layer(components);
 
 /*
- * AERO app style: warm paper, near-black ink, and two accents whose
- * meanings never swap.
+ * Warm paper, near-black ink, and two accents whose meanings never swap.
  *   action (orange): things you can click. Pins, the one main button, focus.
  *   status (blue):   things that are true. You are here; threads alive.
  */

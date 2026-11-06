@@ -25,7 +25,6 @@ Expired threads are deleted whenever someone starts a new one, so nothing runs o
 | Database | Postgres. Neon works through either its pooled or its direct connection string. Migrations in `migrations/` run when a function instance starts. |
 | Front end | React 19, Vite and Tailwind 4, built with bun and served from Vercel's CDN |
 | Map | MapLibre GL with OpenFreeMap's `positron` tiles: no key, no account |
-| Look | AERO app style: warm paper and ink, orange for what you can click, blue for what is true |
 
 ## Local development
 
