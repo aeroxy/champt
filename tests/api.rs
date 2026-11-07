@@ -33,10 +33,15 @@ async fn setup() -> Option<(Router, PgPool)> {
         return None;
     };
     let pool = champt::connect(&url).await.expect("connect to TEST_DATABASE_URL");
-    let mut paserk = String::new();
-    aero_key().fmt(&mut paserk).unwrap();
-    let verifier = champt::Verifier::new(&paserk, CLIENT_ID).unwrap();
+    let verifier = champt::Verifier::new(&paserk(), CLIENT_ID).unwrap();
     Some((champt::app(pool.clone(), verifier), pool))
+}
+
+/// The shared key the way Aero hands it over: `k4.local.…`.
+fn paserk() -> String {
+    let mut text = String::new();
+    aero_key().fmt(&mut text).unwrap();
+    text
 }
 
 /// Claims as Aero writes them: `iat` and `nbf` now, `exp` in an hour.
@@ -229,6 +234,30 @@ async fn only_valid_aero_sign_ins_can_post() {
     // page knows to sign in again. (The pin list never looks, so it can't.)
     let (status, _) = call(&app, "GET", &uri, Some("not-a-token"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_sign_in_starts_at_aero_with_the_servers_client_id() {
+    let Some((app, pool)) = setup().await else { return };
+    let get = |uri: &str| Request::builder().uri(uri).body(Body::empty()).unwrap();
+
+    let response = app.clone().oneshot(get("/api/sign-in?state=abc-123")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()["location"],
+        "https://aero.oops.wtf/login-with-aero?client_id=test-champt-client-id&state=abc-123&ttl=2592000"
+    );
+
+    // A state that isn't plain URL-safe text could rewrite the link.
+    for bad in ["/api/sign-in", "/api/sign-in?state=", "/api/sign-in?state=a%20b", "/api/sign-in?state=a%26client_id%3Devil"] {
+        let response = app.clone().oneshot(get(bad)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    // Before registration there is nowhere to send anyone.
+    let unregistered = champt::app(pool, champt::Verifier::new(&paserk(), "").unwrap());
+    let response = unregistered.oneshot(get("/api/sign-in?state=abc")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

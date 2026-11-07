@@ -3,12 +3,6 @@
 // can open. The page keeps it as an opaque string, sends it with each call,
 // and learns who is signed in from the API (/api/me).
 
-/** Champt's client id on Aero. The API has the same value in `src/auth.rs`. */
-export const AERO_CLIENT_ID = ''
-
-const AERO_LOGIN = 'https://aero.oops.wtf/login-with-aero'
-/** How long a sign-in lasts. A token can't be recalled before it ends. */
-const TTL_SECONDS = 30 * 24 * 60 * 60
 const TOKEN_KEY = 'champt.session'
 const STATE_KEY = 'champt.sign-in-state'
 
@@ -42,12 +36,15 @@ export function currentSession(): Session | null {
   return token ? { token } : null
 }
 
-/** Leaves for Aero's consent screen. */
+/**
+ * Leaves for Aero's consent screen, by way of the API, which holds Champt's
+ * client id and sends the browser on. `state` stays here, to check the
+ * answer against.
+ */
 export function signIn() {
   const state = crypto.randomUUID()
   write(tab, STATE_KEY, state)
-  const query = new URLSearchParams({ client_id: AERO_CLIENT_ID, state, ttl: String(TTL_SECONDS) })
-  location.assign(`${AERO_LOGIN}?${query}`)
+  location.assign(`/api/sign-in?state=${state}`)
 }
 
 const listeners = new Set<() => void>()

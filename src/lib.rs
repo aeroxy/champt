@@ -28,7 +28,7 @@ use axum::{
     Json, Router,
     extract::{FromRef, FromRequestParts, Path, Query, State},
     http::{StatusCode, header::AUTHORIZATION, request::Parts},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -91,6 +91,7 @@ pub fn app(pool: PgPool, verifier: Verifier) -> Router {
         .route("/api/threads/{id}", get(get_thread))
         .route("/api/threads/{id}/messages", post(add_message))
         .route("/api/me", get(me).put(set_nickname))
+        .route("/api/sign-in", get(sign_in))
         .with_state(AppState { pool, verifier: Arc::new(verifier) })
 }
 
@@ -147,6 +148,8 @@ pub enum ApiError {
     Forbidden(String),
     /// Clashes with what is there, such as a nickname someone has.
     Conflict(String),
+    /// Not set up on this deployment, such as sign-in before registration.
+    Unavailable(String),
     /// Never existed, or expired: to a visitor the two look the same.
     NotFound,
     Internal,
@@ -159,6 +162,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
             ApiError::Forbidden(message) => (StatusCode::FORBIDDEN, message),
             ApiError::Conflict(message) => (StatusCode::CONFLICT, message),
+            ApiError::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "This thread has expired.".to_owned()),
             ApiError::Internal => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong. Try again.".to_owned())
@@ -261,6 +265,27 @@ async fn get_thread(
     Author(viewer): Author,
 ) -> Result<Json<Thread>, ApiError> {
     Ok(Json(load_thread(&pool, id, viewer.map(|person| person.id)).await?))
+}
+
+#[derive(Deserialize)]
+struct SignInQuery {
+    state: String,
+}
+
+/// Starts a sign-in by sending the browser to Aero's consent screen. The
+/// page makes up `state` and keeps it, to check Aero's answer against; the
+/// client id stays on the server, next to the key it belongs with.
+async fn sign_in(State(app): State<AppState>, Query(query): Query<SignInQuery>) -> Result<Redirect, ApiError> {
+    let state = query.state;
+    let url_safe = state.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !(1..=512).contains(&state.len()) || !url_safe {
+        return Err(ApiError::BadRequest("state must be 1 to 512 letters, digits, - or _.".to_owned()));
+    }
+    let url = app
+        .verifier
+        .sign_in_url(&state)
+        .ok_or_else(|| ApiError::Unavailable("Sign-in isn't set up yet.".to_owned()))?;
+    Ok(Redirect::to(&url))
 }
 
 /// What the page learns about who is signed in: only their nickname, since

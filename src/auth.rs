@@ -12,14 +12,20 @@ use pasetors::token::UntrustedToken;
 use pasetors::{Local, local, version4::V4};
 use uuid::Uuid;
 
-/// Champt's client id on Aero, from its "Login with Aero" registration. The
-/// page has the same value in `frontend/src/auth.ts`. Until it is set, every
-/// sign-in is refused.
-pub const AERO_CLIENT_ID: &str = "";
-
-/// Environment variable holding the key Aero gave at registration: a PASERK
-/// `k4.local.…` string. It lives only in the backend's environment.
+/// Champt's registration on Aero gives a client id and a key together, and
+/// registering again replaces both, so both live in the backend's
+/// environment. The key is a PASERK `k4.local.…` string and secret; the id
+/// is public, but it still lives only here: the page starts a sign-in
+/// through `/api/sign-in`, which adds it.
+pub const CLIENT_ID_VAR: &str = "AERO_CLIENT_ID";
 pub const KEY_VAR: &str = "AERO_LOGIN_KEY";
+
+/// Aero's consent screen, where a sign-in starts.
+const AERO_LOGIN_URL: &str = "https://aero.oops.wtf/login-with-aero";
+
+/// How long a sign-in lasts: 30 days. The token is the session, and Aero
+/// can't recall one before it runs out.
+const SESSION_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 /// Turns an email into an author id. Changing it would make everyone a new
 /// person, so it never changes.
@@ -37,7 +43,8 @@ pub struct Person {
 pub struct Verifier {
     /// None when the key is missing or unreadable: then nobody can sign in.
     key: Option<SymmetricKey<V4>>,
-    client_id: String,
+    /// None when missing or not base64url: the same.
+    client_id: Option<String>,
 }
 
 impl Verifier {
@@ -45,17 +52,31 @@ impl Verifier {
     /// addressed to `client_id`.
     pub fn new(key: &str, client_id: &str) -> Result<Verifier, pasetors::errors::Error> {
         let key = SymmetricKey::<V4>::try_from(key)?;
-        Ok(Verifier { key: Some(key), client_id: client_id.to_owned() })
+        Ok(Verifier { key: Some(key), client_id: usable(client_id) })
     }
 
-    /// The real thing: the key from the environment and Champt's client id.
-    /// Without a usable key the API still serves reads, and says so once.
+    /// The real thing, from the environment. Without both values the API
+    /// still serves reads, and says once why nobody can sign in.
     pub fn aero() -> Verifier {
         let key = std::env::var(KEY_VAR).ok().and_then(|text| SymmetricKey::<V4>::try_from(text.trim()).ok());
+        let client_id = std::env::var(CLIENT_ID_VAR).ok().and_then(|text| usable(&text));
         if key.is_none() {
             eprintln!("{KEY_VAR} is missing or not a k4.local key; sign-ins will be refused");
         }
-        Verifier { key, client_id: AERO_CLIENT_ID.to_owned() }
+        if client_id.is_none() {
+            eprintln!("{CLIENT_ID_VAR} is missing or malformed; sign-ins will be refused");
+        }
+        Verifier { key, client_id }
+    }
+
+    /// Aero's consent screen for a new sign-in, carrying the page's `state`
+    /// back with the answer. None until both the client id and the key are
+    /// set: a sign-in that Champt couldn't open would only end in a 401.
+    /// `state` must already be URL-safe.
+    pub fn sign_in_url(&self, state: &str) -> Option<String> {
+        self.key.as_ref()?;
+        let client_id = self.client_id.as_deref()?;
+        Some(format!("{AERO_LOGIN_URL}?client_id={client_id}&state={state}&ttl={SESSION_TTL_SECONDS}"))
     }
 
     /// Who a token names, if it was made with Champt's key, is addressed to
@@ -63,12 +84,10 @@ impl Verifier {
     /// made by Aero (or by Champt), so there is no signature to check besides.
     pub fn person(&self, token: &str) -> Option<Person> {
         let key = self.key.as_ref()?;
-        if self.client_id.is_empty() {
-            return None;
-        }
+        let client_id = self.client_id.as_deref()?;
         // `iat`, `nbf` and `exp` are checked by default, and `exp` is required.
         let mut rules = ClaimsValidationRules::new();
-        rules.validate_audience_with(&self.client_id);
+        rules.validate_audience_with(client_id);
         let untrusted = UntrustedToken::<Local, V4>::try_from(token).ok()?;
         let trusted = local::decrypt(key, &untrusted, &rules, None, None).ok()?;
         let email = trusted.payload_claims()?.get_claim("email")?.as_str()?.trim().to_lowercase();
@@ -78,6 +97,14 @@ impl Verifier {
         let id = Uuid::new_v5(&AUTHOR_NAMESPACE, email.as_bytes());
         Some(Person { id, email })
     }
+}
+
+/// A client id as Aero issues them: base64url. Anything else is treated as
+/// missing, since it would break the sign-in link.
+fn usable(client_id: &str) -> Option<String> {
+    let id = client_id.trim();
+    let fits = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    fits.then(|| id.to_owned())
 }
 
 #[cfg(test)]
@@ -120,6 +147,19 @@ mod tests {
         let key = SymmetricKey::<V4>::generate().unwrap();
         let verifier = Verifier::new(&paserk(&key), "").unwrap();
         assert!(verifier.person(&token(&key, "champt", "ada@example.com")).is_none());
+    }
+
+    #[test]
+    fn a_sign_in_starts_at_aero_with_the_client_id_and_30_days() {
+        let key = SymmetricKey::<V4>::generate().unwrap();
+        let verifier = Verifier::new(&paserk(&key), " AbC-12_x ").unwrap();
+        assert_eq!(
+            verifier.sign_in_url("s-1").as_deref(),
+            Some("https://aero.oops.wtf/login-with-aero?client_id=AbC-12_x&state=s-1&ttl=2592000")
+        );
+        for unusable in ["", "   ", "has space", "a&b=c"] {
+            assert!(Verifier::new(&paserk(&key), unusable).unwrap().sign_in_url("s").is_none(), "{unusable:?}");
+        }
     }
 
     #[test]

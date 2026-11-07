@@ -25,7 +25,8 @@ Expired threads are deleted whenever someone starts a new one, so nothing runs o
 | Database | Postgres. Neon works through either its pooled or its direct connection string. Migrations in `migrations/` run when a function instance starts. |
 | Front end | React 19, Vite and Tailwind 4, built with bun and served from Vercel's CDN |
 | Map | MapLibre GL with OpenFreeMap's `positron` tiles: no key, no account |
-| Sign-in | [Aero](https://aero.oops.wtf)'s Login with Aero: identity only, not OAuth. The token is PASETO `v4.local`: the visitor's email, encrypted with a key only Aero and Champt hold (`AERO_LOGIN_KEY`), valid for 30 days. The browser keeps it without being able to read it; the API decrypts it and checks its audience and times on every call that needs to know who is asking. |
+| Analytics | Google Analytics, production builds only. It starts after a sign-in's token has left the address bar, and is given the page address without query or fragment, so no token can reach it (`frontend/src/analytics.ts`) |
+| Sign-in | [Aero](https://aero.oops.wtf)'s Login with Aero: identity only, not OAuth. The token is PASETO `v4.local`: the visitor's email, encrypted with a key only Aero and Champt hold, valid for 30 days. The browser keeps it without being able to read it; the API decrypts it and checks its audience and times on every call that needs to know who is asking. The client id and key both live in the backend's environment (`AERO_CLIENT_ID`, `AERO_LOGIN_KEY`); the page starts a sign-in at `/api/sign-in`, which adds the client id. |
 
 ## Local development
 
@@ -37,7 +38,7 @@ cd frontend && bun install && bun run dev   # http://localhost:5176, proxying /a
 
 Browsers only share location with secure pages. `localhost` counts; a LAN address over plain http does not.
 
-A sign-in can only finish on the callback registered with Aero, which is the production site, so locally you can read but not post. To post locally, put `AERO_LOGIN_KEY` in `.env` and copy `champt.session` from the production site's localStorage into localhost's: the token is addressed to Champt, not to a domain.
+A sign-in can only finish on the callback registered with Aero, which is the production site, so locally you can read but not post. To post locally, put the production `AERO_CLIENT_ID` and `AERO_LOGIN_KEY` in `.env` and copy `champt.session` from the production site's localStorage into localhost's: the token is addressed to Champt, not to a domain.
 
 ## Tests
 
@@ -53,7 +54,7 @@ The API tests write rows and leave them, so give them a throwaway database. With
 
 1. Import the GitHub repository as a Vercel project. `vercel.json` does the rest: bun builds `frontend/` into static files, Vercel builds `api/server.rs` as a function, and `/api/*` is rewritten to it.
 2. Give it a Postgres database as `DATABASE_URL`, in AWS Singapore (`aws-ap-southeast-1`) to match the `sin1` function region in `vercel.json`, since every API call makes several round trips to it. Add Neon from the project's Storage tab (it sets the variable for you), or paste a connection string into the project's environment variables.
-3. Register Champt on [Aero's Connect page](https://aero.oops.wtf/connect) under Login with Aero, with the callback `https://<your domain>/auth/aero`. Aero shows a `k4.local.…` key once: set it as `AERO_LOGIN_KEY` in the project's environment variables, never in the repo. Once the registration is approved, put its client id in `AERO_CLIENT_ID`, in both `src/auth.rs` and `frontend/src/auth.ts`. Until both are in place every sign-in is refused, so nobody can post. A lost key means deleting the app on Aero and registering again.
+3. Register Champt on [Aero's Connect page](https://aero.oops.wtf/connect) under Login with Aero, with the callback `https://<your domain>/auth/aero`. It gives a client id and a `k4.local.…` key, the key shown only once: set them as `AERO_CLIENT_ID` and `AERO_LOGIN_KEY` in the project's environment variables, never in the repo, and redeploy. Sign-ins work once Aero approves the registration. Until both are set, signing in answers "Sign-in isn't set up yet" and nobody can post. A lost key means deleting the app on Aero and registering again, which gives a new id and key.
 4. Deploy, or push to the production branch. The first request runs the migrations.
 
 ## API
@@ -64,6 +65,7 @@ The API tests write rows and leave them, so give them a throwaway database. With
 | `GET` | `/api/threads/{id}` | | the thread and its messages, or 404 once it has expired |
 | `POST` | `/api/threads` | `{ lat, lng, body }` | 201 and the new thread; 403 without a nickname |
 | `POST` | `/api/threads/{id}/messages` | `{ body, lat, lng }` | 201 and the thread; 403 without a nickname or from over 100 km away; 404 if it has expired |
+| `GET` | `/api/sign-in?state=…` | | 303 to Aero's consent screen with Champt's client id and a 30-day `ttl`; 400 unless `state` is 1–512 letters, digits, `-` or `_`; 503 before registration |
 | `GET` | `/api/me` | | `{ nickname }` of whoever is signed in, null until they choose one; 401 when signed out. The page can't open its own token |
 | `PUT` | `/api/me` | `{ nickname }` | 200 and `{ nickname }`; 400 if it breaks the rules; 409 if someone has it. Changing it frees the old one |
 
