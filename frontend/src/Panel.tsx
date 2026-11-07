@@ -4,7 +4,7 @@ import { type Pin, type Thread, problem } from './api'
 import { signIn } from './auth'
 import { ago, distanceKm, timeLeft } from './format'
 import type { Spot } from './MapView'
-import { Button, LiveChip } from './ui'
+import { Avatar, Button, LiveChip } from './ui'
 
 export type View =
   | { kind: 'none' }
@@ -118,6 +118,7 @@ export function ThreadPanel({
             {thread.messages.map((message, i) => (
               <li key={message.id} ref={i === count - 1 ? end : undefined}>
                 <div className="flex items-baseline gap-2">
+                  <Avatar src={message.avatar} className="size-5 self-center" />
                   <span className="truncate text-[13px] font-semibold text-fg">{message.author_name}</span>
                   {message.mine && (
                     <span className="rounded-full border border-border px-1.5 text-[10px] font-medium text-fg-3">

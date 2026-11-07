@@ -15,6 +15,8 @@ export type Pin = {
 export type Message = {
   id: number
   author_name: string
+  /** A link to the author's Gravatar, while they choose to show it. */
+  avatar: string | null
   body: string
   created_at: string
   mine: boolean
@@ -34,7 +36,11 @@ export type Thread = {
 }
 
 /** The signed-in person as others see them. Posting needs a nickname. */
-export type Me = { nickname: string | null }
+export type Me = {
+  nickname: string | null
+  /** A link to their Gravatar, while they choose to show it. */
+  avatar: string | null
+}
 
 export class ApiError extends Error {
   constructor(
@@ -81,6 +87,8 @@ export const api = {
   me: () => call<Me>('/api/me'),
   /** Chooses or changes the nickname; 409 if someone has it. */
   setNickname: (nickname: string) => call<Me>('/api/me', { body: { nickname }, method: 'PUT' }),
+  /** Shows or hides the signed-in person's Gravatar next to their posts; 403 before a nickname. */
+  setGravatar: (show: boolean) => call<Me>('/api/me/gravatar', { body: { show }, method: 'PUT' }),
   start: (thread: { lat: number; lng: number; body: string }) => call<Thread>('/api/threads', { body: thread }),
   /** `lat`/`lng` is where the poster is, checked against the reply radius and not stored. */
   reply: (id: number, message: { body: string; lat: number; lng: number }) =>

@@ -8,7 +8,10 @@ axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 dotenvy = "0.15"
 pasetors = "0.8"
+# 0.12 runs rustls on ring with bundled roots, as sqlx does; 0.13 moves to aws-lc-rs.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "macros", "migrate"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 tower = "0.5"

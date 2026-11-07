@@ -3,20 +3,25 @@
 //! database: the tests write rows and leave them there.
 //!
 //! Sign-ins use a throwaway key standing in for the one Aero shares with
-//! Champt, and tokens minted the way Aero mints them.
+//! Champt, and tokens minted the way Aero mints them. Gravatar is a stand-in
+//! on a local port, with one picture.
 
-use std::sync::OnceLock;
+use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode},
+    extract::{Path, Query},
+    http::{HeaderMap, Request, StatusCode, header::CONTENT_TYPE},
+    response::IntoResponse,
+    routing::get,
 };
 use pasetors::claims::Claims;
 use pasetors::keys::{Generate, SymmetricKey};
 use pasetors::paserk::FormatAsPaserk;
 use pasetors::{local, version4::V4};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -34,7 +39,41 @@ async fn setup() -> Option<(Router, PgPool)> {
     };
     let pool = champt::connect(&url).await.expect("connect to TEST_DATABASE_URL");
     let verifier = champt::Verifier::new(&paserk(), CLIENT_ID).unwrap();
-    Some((champt::app(pool.clone(), verifier), pool))
+    Some((champt::app(pool.clone(), verifier, stand_in_gravatar().await), pool))
+}
+
+/// The one person the stand-in Gravatar has a picture for, spelled the way
+/// Aero might send it.
+const PICTURED: &str = "Ada.Gravatar@Example.com";
+const PICTURE: &[u8] = b"\x89PNG\r\n\x1a\nnot really a picture";
+
+/// A stand-in for Gravatar, filing its one picture the way Gravatar does:
+/// under the SHA-256 of the email, trimmed and lowercased. Everyone else gets
+/// a 404, and so does a request that doesn't ask for one in place of
+/// Gravatar's placeholder (`d=404`).
+async fn stand_in_gravatar() -> champt::Gravatar {
+    let pictured = sha256_hex(&PICTURED.to_lowercase());
+    let gravatar = Router::new().route(
+        "/avatar/{hash}",
+        get(move |Path(hash): Path<String>, Query(query): Query<HashMap<String, String>>| {
+            let found = hash == pictured && query.get("d").is_some_and(|d| d == "404");
+            async move {
+                if found {
+                    ([(CONTENT_TYPE, "image/png")], PICTURE).into_response()
+                } else {
+                    StatusCode::NOT_FOUND.into_response()
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/avatar/", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, gravatar).await.unwrap() });
+    champt::Gravatar::at(&base)
+}
+
+fn sha256_hex(text: &str) -> String {
+    Sha256::digest(text).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The shared key the way Aero hands it over: `k4.local.…`.
@@ -76,6 +115,19 @@ async fn member(app: &Router, email: &str) -> String {
 
 async fn nickname_as(app: &Router, who: &str, nickname: &str) -> (StatusCode, Value) {
     call(app, "PUT", "/api/me", Some(who), Some(json!({ "nickname": nickname }))).await
+}
+
+async fn show_gravatar(app: &Router, who: &str, show: bool) -> (StatusCode, Value) {
+    call(app, "PUT", "/api/me/gravatar", Some(who), Some(json!({ "show": show }))).await
+}
+
+/// GETs `uri` and keeps the answer as it came, for pictures.
+async fn fetch(app: &Router, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, headers, bytes.to_vec())
 }
 
 async fn call(
@@ -255,7 +307,7 @@ async fn a_sign_in_starts_at_aero_with_the_servers_client_id() {
     }
 
     // Before registration there is nowhere to send anyone.
-    let unregistered = champt::app(pool, champt::Verifier::new(&paserk(), "").unwrap());
+    let unregistered = champt::app(pool, champt::Verifier::new(&paserk(), "").unwrap(), stand_in_gravatar().await);
     let response = unregistered.oneshot(get("/api/sign-in?state=abc")).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
@@ -272,7 +324,7 @@ async fn nicknames_are_unique_ignoring_case() {
 
     // Signed in but nameless: no posting yet.
     let (status, me) = call(&app, "GET", "/api/me", Some(&ada), None).await;
-    assert_eq!((status, me), (StatusCode::OK, json!({ "nickname": null })));
+    assert_eq!((status, me), (StatusCode::OK, json!({ "nickname": null, "avatar": null })));
     let (status, body) = call(&app, "POST", "/api/threads", Some(&ada), Some(json!({ "lat": 1.0, "lng": 1.0, "body": "hi" }))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(body["error"].as_str().unwrap().contains("nickname"));
@@ -300,9 +352,13 @@ async fn emails_stay_on_the_server_for_audits() {
     let ada = member(&app, "Ada.Audit@Example.com").await;
     let grace = member(&app, "grace.audit@example.com").await;
 
-    // The page learns only the nickname, never an email, even its own.
-    let (status, me) = call(&app, "GET", "/api/me", Some(&ada), None).await;
-    assert_eq!((status, me.clone()), (StatusCode::OK, json!({ "nickname": "ada_audit_t" })));
+    // The page learns only what others see: the nickname and, once she
+    // chooses to show it, a link of Champt's own to her Gravatar. Never an
+    // email, even her own.
+    let (status, me) = show_gravatar(&app, &ada, true).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["nickname"], "ada_audit_t");
+    assert_eq!(me.as_object().unwrap().keys().collect::<Vec<_>>(), ["avatar", "nickname"]);
     let (status, _) = call(&app, "GET", "/api/me", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
@@ -321,12 +377,84 @@ async fn emails_stay_on_the_server_for_audits() {
     .unwrap();
     assert_eq!(emails, ["ada.audit@example.com", "grace.audit@example.com"]);
 
-    // No answer carries an email.
+    // No answer carries an email, or the hash Gravatar files it under.
+    let gravatar_key = sha256_hex("ada.audit@example.com");
     let (_, as_ada) = call(&app, "GET", &format!("/api/threads/{id}"), Some(&ada), None).await;
+    let (_, me_again) = call(&app, "GET", "/api/me", Some(&ada), None).await;
     let (_, list) = call(&app, "GET", "/api/threads?bbox=2,48,3,49", None, None).await;
-    for answer in [me, thread, as_ada, list] {
-        assert!(!answer.to_string().contains("example.com"), "{answer}");
+    for answer in [me, me_again, thread, as_ada, list] {
+        let text = answer.to_string();
+        assert!(!text.contains("example.com") && !text.contains(&gravatar_key), "{text}");
     }
+}
+
+#[tokio::test]
+async fn a_gravatar_shows_only_while_its_owner_wants_it() {
+    let Some((app, pool)) = setup().await else { return };
+    // Ada starts from scratch on every run.
+    sqlx::query("DELETE FROM people WHERE email = lower($1)")
+        .bind(PICTURED)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let ada = member(&app, PICTURED).await;
+    let id = start(&app, &ada, PARIS.0, PARIS.1).await;
+    let uri = format!("/api/threads/{id}");
+    let first_avatar = |thread: Value| thread["messages"][0]["avatar"].clone();
+
+    // Hidden until she chooses to show it.
+    assert_eq!(first_avatar(call(&app, "GET", &uri, None, None).await.1), Value::Null);
+
+    // Shown: her posts link to a picture Champt serves, and it is hers.
+    let (status, me) = show_gravatar(&app, &ada, true).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    let link = me["avatar"].as_str().unwrap().to_owned();
+    assert!(link.starts_with("/api/avatars/"), "{link}");
+    assert_eq!(first_avatar(call(&app, "GET", &uri, None, None).await.1), link.as_str());
+    let (status, headers, bytes) = fetch(&app, &link).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/png");
+    assert_eq!(headers["cache-control"], "private, max-age=3600");
+    assert_eq!(bytes, PICTURE);
+
+    // Showing it again changes nothing, and neither does a new nickname.
+    assert_eq!(show_gravatar(&app, &ada, true).await.1["avatar"], link.as_str());
+    assert_eq!(nickname_as(&app, &ada, "ada_pictured").await.1["avatar"], link.as_str());
+
+    // Hidden again: her posts lose it, and the link stops working.
+    let (_, me) = show_gravatar(&app, &ada, false).await;
+    assert_eq!(me["avatar"], Value::Null);
+    assert_eq!(first_avatar(call(&app, "GET", &uri, None, None).await.1), Value::Null);
+    assert_eq!(fetch(&app, &link).await.0, StatusCode::NOT_FOUND);
+
+    // Shown once more, it gets a new link, so the old one stays dead.
+    let (_, me) = show_gravatar(&app, &ada, true).await;
+    assert_ne!(me["avatar"], link.as_str());
+    assert_eq!(fetch(&app, &link).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn without_a_gravatar_there_is_no_picture() {
+    let Some((app, pool)) = setup().await else { return };
+    sqlx::query("DELETE FROM people WHERE email = 'bob.plain@example.com'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let bob = signed_in("bob.plain@example.com");
+
+    // The choice comes after a sign-in and a nickname.
+    let (status, _) = call(&app, "PUT", "/api/me/gravatar", None, Some(json!({ "show": true }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(show_gravatar(&app, &bob, true).await.0, StatusCode::FORBIDDEN);
+
+    // Gravatar has nothing for Bob, so his link finds no picture.
+    assert_eq!(nickname_as(&app, &bob, "bob_plain").await.0, StatusCode::OK);
+    let (_, me) = show_gravatar(&app, &bob, true).await;
+    assert_eq!(fetch(&app, me["avatar"].as_str().unwrap()).await.0, StatusCode::NOT_FOUND);
+
+    // Nor does a link nobody was given.
+    let nobody = "/api/avatars/00000000-0000-4000-8000-000000000000";
+    assert_eq!(fetch(&app, nobody).await.0, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

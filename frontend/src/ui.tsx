@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import { type ButtonHTMLAttributes, type ReactNode, useState } from 'react'
 
 type Variant = 'primary' | 'accent' | 'secondary' | 'ghost'
 
@@ -48,6 +48,33 @@ export function Chip({ children }: { children: ReactNode }) {
       <span className="size-1.5 rounded-full bg-border-strong" />
       {children}
     </span>
+  )
+}
+
+/**
+ * Someone's Gravatar, through the link Champt serves it at. Nothing without a
+ * link, and `missing` when the link has no picture behind it.
+ */
+export function Avatar({
+  src,
+  className = '',
+  missing = null,
+}: {
+  src: string | null
+  className?: string
+  missing?: ReactNode
+}) {
+  // The link that failed, so a new link gets a fresh try.
+  const [failed, setFailed] = useState<string | null>(null)
+  if (!src) return null
+  if (failed === src) return <>{missing}</>
+  return (
+    <img
+      src={src}
+      alt=""
+      onError={() => setFailed(src)}
+      className={`shrink-0 rounded-full bg-muted object-cover ${className}`}
+    />
   )
 }
 

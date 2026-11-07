@@ -10,6 +10,6 @@ async fn main() -> Result<(), Error> {
     let pool = champt::connect(&url).await?;
     let app = ServiceBuilder::new()
         .layer(VercelLayer::new())
-        .service(champt::app(pool, champt::Verifier::aero()));
+        .service(champt::app(pool, champt::Verifier::aero(), champt::Gravatar::public()));
     vercel_runtime::run(app).await
 }

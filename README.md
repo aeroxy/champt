@@ -12,7 +12,8 @@ An early 2013 prototype (Node and Socket.IO, live dots on a map) is on the `arch
 | A thread lives 24 hours past its last turn change | one `UPDATE` in `add_message`, `src/lib.rs`; every read filters on `expires_at > now()` |
 | The map pans worldwide, the antimeridian included, and any thread can be read | `list_threads`, `BBox` in `src/geo.rs` |
 | Replies come only from within 100 km of a thread. The poster's position travels with the reply for the check and is not stored | `REPLY_RADIUS_KM` and `add_message` in `src/lib.rs`; the reply box in `frontend/src/Panel.tsx` |
-| Reading needs no account. Posting needs Sign in with Aero and a nickname: 3–20 English letters, numbers or `_`, unique ignoring case, and all anyone else sees. The email stays on the server, in `people`, for audits | `src/auth.rs`, `Author` and `valid_nickname` in `src/lib.rs`, `frontend/src/auth.ts` |
+| Reading needs no account. Posting needs Sign in with Aero and a nickname: 3–20 English letters, numbers or `_`, unique ignoring case, and all anyone else sees unless they also show their Gravatar. The email stays on the server, in `people`, for audits | `src/auth.rs`, `Author` and `valid_nickname` in `src/lib.rs`, `frontend/src/auth.ts` |
+| A Gravatar shows next to someone's posts only while they choose to. The API fetches it and serves it under a random id of its own, so no browser sees a hash of the email, and hiding it retires the id | `src/gravatar.rs`, `set_gravatar` and `avatar` in `src/lib.rs`, the switch in `frontend/src/App.tsx` |
 | No live updates: Refresh reloads the pins and the open thread | `frontend/src/App.tsx` |
 
 Expired threads are deleted whenever someone starts a new one, so nothing runs on a schedule.
@@ -25,6 +26,7 @@ Expired threads are deleted whenever someone starts a new one, so nothing runs o
 | Database | Postgres. Neon works through either its pooled or its direct connection string. Migrations in `migrations/` run when a function instance starts. |
 | Front end | React 19, Vite and Tailwind 4, built with bun and served from Vercel's CDN |
 | Map | MapLibre GL with OpenFreeMap's `positron` tiles: no key, no account |
+| Avatars | Gravatar, for those who turn it on. The API asks for the picture with `d=404`, so a missing one stays missing, and gets only pictures rated G. Browsers may keep it for an hour; shared caches keep none (`src/gravatar.rs`) |
 | Analytics | Google Analytics, production builds only. It starts after a sign-in's token has left the address bar, and is given the page address without query or fragment, so no token can reach it (`frontend/src/analytics.ts`) |
 | Sign-in | [Aero](https://aero.oops.wtf)'s Login with Aero: identity only, not OAuth. The token is PASETO `v4.local`: the visitor's email, encrypted with a key only Aero and Champt hold, valid for 30 days. The browser keeps it without being able to read it; the API decrypts it and checks its audience and times on every call that needs to know who is asking. The client id and key both live in the backend's environment (`AERO_CLIENT_ID`, `AERO_LOGIN_KEY`); the page starts a sign-in at `/api/sign-in`, which adds the client id. |
 
@@ -66,10 +68,12 @@ The API tests write rows and leave them, so give them a throwaway database. With
 | `POST` | `/api/threads` | `{ lat, lng, body }` | 201 and the new thread; 403 without a nickname |
 | `POST` | `/api/threads/{id}/messages` | `{ body, lat, lng }` | 201 and the thread; 403 without a nickname or from over 100 km away; 404 if it has expired |
 | `GET` | `/api/sign-in?state=…` | | 303 to Aero's consent screen with Champt's client id and a 30-day `ttl`; 400 unless `state` is 1–512 letters, digits, `-` or `_`; 503 before registration |
-| `GET` | `/api/me` | | `{ nickname }` of whoever is signed in, null until they choose one; 401 when signed out. The page can't open its own token |
-| `PUT` | `/api/me` | `{ nickname }` | 200 and `{ nickname }`; 400 if it breaks the rules; 409 if someone has it. Changing it frees the old one |
+| `GET` | `/api/me` | | `{ nickname, avatar }` of whoever is signed in: `nickname` is null until they choose one, `avatar` is a link to their Gravatar while they show it; 401 when signed out. The page can't open its own token |
+| `PUT` | `/api/me` | `{ nickname }` | 200 and `{ nickname, avatar }`; 400 if it breaks the rules; 409 if someone has it. Changing it frees the old one |
+| `PUT` | `/api/me/gravatar` | `{ show }` | 200 and `{ nickname, avatar }`; 403 without a nickname. Showing it makes a new random link, hiding it retires the link |
+| `GET` | `/api/avatars/{id}` | | the picture, fetched from Gravatar; 404 once its owner hides it, or if Gravatar has none; 503 if Gravatar doesn't answer |
 
-Posting needs `Authorization: Bearer <token>` with a token from Sign in with Aero. Without one, or with one that fails its checks, the answer is 401; so is a thread read with a failing token, which tells the page to sign in again. A thread tells each reader which messages are theirs (`mine`), whether their reply would reset the clock (`reply_extends`), and how far away a reply may come from (`reply_radius_km`); author ids and emails never leave the server. A message shows its author's current nickname. Messages run up to 500 characters. Errors come back as `{ error }`.
+Posting needs `Authorization: Bearer <token>` with a token from Sign in with Aero. Without one, or with one that fails its checks, the answer is 401; so is a thread read with a failing token, which tells the page to sign in again. A thread tells each reader which messages are theirs (`mine`), whether their reply would reset the clock (`reply_extends`), and how far away a reply may come from (`reply_radius_km`); author ids, emails and anything derived from them never leave the server. A message shows its author's current nickname, and `avatar`, a link to their Gravatar while they show it. Messages run up to 500 characters. Errors come back as `{ error }`.
 
 ## Auditing
 

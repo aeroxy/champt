@@ -11,14 +11,18 @@
 //! the position is not stored.
 //!
 //! People sign in with Aero (see `auth`) and choose a nickname, which is all
-//! anyone else sees of them. Posting needs both. The queries compare people
-//! by an id derived from their email; the email sits in `people` for the
-//! operator's audits and never leaves the server. Reading needs neither.
+//! anyone else sees of them unless they choose to show their Gravatar too
+//! (see `gravatar`). Posting needs a sign-in and a nickname. The queries
+//! compare people by an id derived from their email; the email sits in
+//! `people` for the operator's audits, and neither it nor anything derived
+//! from it leaves the server. Reading needs no account.
 
 mod auth;
 mod geo;
+mod gravatar;
 
 pub use auth::Verifier;
+pub use gravatar::Gravatar;
 
 use auth::Person;
 
@@ -27,9 +31,13 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Json, Router,
     extract::{FromRef, FromRequestParts, Path, Query, State},
-    http::{StatusCode, header::AUTHORIZATION, request::Parts},
+    http::{
+        StatusCode,
+        header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS},
+        request::Parts,
+    },
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -84,21 +92,25 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 }
 
 /// `verifier` decides who a sign-in token stands for: [`Verifier::aero`] for
-/// real, a test key in tests.
-pub fn app(pool: PgPool, verifier: Verifier) -> Router {
+/// real, a test key in tests. `gravatar` is where pictures come from:
+/// [`Gravatar::public`] for real, a stand-in in tests.
+pub fn app(pool: PgPool, verifier: Verifier, gravatar: Gravatar) -> Router {
     Router::new()
         .route("/api/threads", get(list_threads).post(create_thread))
         .route("/api/threads/{id}", get(get_thread))
         .route("/api/threads/{id}/messages", post(add_message))
         .route("/api/me", get(me).put(set_nickname))
+        .route("/api/me/gravatar", put(set_gravatar))
+        .route("/api/avatars/{id}", get(avatar))
         .route("/api/sign-in", get(sign_in))
-        .with_state(AppState { pool, verifier: Arc::new(verifier) })
+        .with_state(AppState { pool, verifier: Arc::new(verifier), gravatar })
 }
 
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
     verifier: Arc<Verifier>,
+    gravatar: Gravatar,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -148,10 +160,13 @@ pub enum ApiError {
     Forbidden(String),
     /// Clashes with what is there, such as a nickname someone has.
     Conflict(String),
-    /// Not set up on this deployment, such as sign-in before registration.
+    /// Not available: not set up on this deployment, such as sign-in before
+    /// registration, or Gravatar not answering.
     Unavailable(String),
     /// Never existed, or expired: to a visitor the two look the same.
     NotFound,
+    /// No picture to show: its owner hid it, or Gravatar has none for them.
+    NoPicture,
     Internal,
 }
 
@@ -164,6 +179,7 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(message) => (StatusCode::CONFLICT, message),
             ApiError::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "This thread has expired.".to_owned()),
+            ApiError::NoPicture => (StatusCode::NOT_FOUND, "There's no picture here.".to_owned()),
             ApiError::Internal => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong. Try again.".to_owned())
             }
@@ -252,11 +268,24 @@ struct Thread {
 struct Message {
     id: i64,
     author_name: String,
+    /// A link to the author's Gravatar, while they choose to show it.
+    avatar: Option<String>,
     body: String,
     created_at: DateTime<Utc>,
     /// Posted by the asker. Ids stay on the server, so nobody can post as
     /// someone else just by reading a thread.
     mine: bool,
+}
+
+/// A message as stored, with its author's nickname and Gravatar id as they are now.
+#[derive(sqlx::FromRow)]
+struct MessageRow {
+    id: i64,
+    author_id: Uuid,
+    author_name: String,
+    gravatar: Option<Uuid>,
+    body: String,
+    created_at: DateTime<Utc>,
 }
 
 async fn get_thread(
@@ -288,21 +317,27 @@ async fn sign_in(State(app): State<AppState>, Query(query): Query<SignInQuery>) 
     Ok(Redirect::to(&url))
 }
 
-/// What the page learns about who is signed in: only their nickname, since
-/// it can't open the token. No email, even to its owner.
+/// What the page learns about who is signed in: what others see of them,
+/// since it can't open the token. No email, even to its owner.
 #[derive(Serialize)]
 struct Me {
     /// None until they choose one; posting needs it.
     nickname: Option<String>,
+    /// A link to their Gravatar, while they choose to show it.
+    avatar: Option<String>,
 }
 
 async fn me(State(pool): State<PgPool>, author: Author) -> Result<Json<Me>, ApiError> {
     let person = author.required()?;
-    let row: Option<(String,)> = sqlx::query_as("SELECT nickname FROM people WHERE id = $1")
-        .bind(person.id)
-        .fetch_optional(&pool)
-        .await?;
-    Ok(Json(Me { nickname: row.map(|(nickname,)| nickname) }))
+    let row: Option<(String, Option<Uuid>)> =
+        sqlx::query_as("SELECT nickname, gravatar FROM people WHERE id = $1")
+            .bind(person.id)
+            .fetch_optional(&pool)
+            .await?;
+    Ok(Json(match row {
+        Some((nickname, gravatar)) => Me { nickname: Some(nickname), avatar: avatar_link(gravatar) },
+        None => Me { nickname: None, avatar: None },
+    }))
 }
 
 #[derive(Deserialize)]
@@ -318,23 +353,79 @@ async fn set_nickname(
 ) -> Result<Json<Me>, ApiError> {
     let person = author.required()?;
     let nickname = valid_nickname(&new.nickname)?;
-    let saved = sqlx::query(
+    let saved: Result<(Option<Uuid>,), _> = sqlx::query_as(
         "INSERT INTO people (id, email, nickname) VALUES ($1, $2, $3)
-         ON CONFLICT (id) DO UPDATE SET nickname = EXCLUDED.nickname, email = EXCLUDED.email",
+         ON CONFLICT (id) DO UPDATE SET nickname = EXCLUDED.nickname, email = EXCLUDED.email
+         RETURNING gravatar",
     )
     .bind(person.id)
     .bind(&person.email)
     .bind(&nickname)
-    .execute(&pool)
+    .fetch_one(&pool)
     .await;
     match saved {
-        Ok(_) => Ok(Json(Me { nickname: Some(nickname) })),
+        Ok((gravatar,)) => Ok(Json(Me { nickname: Some(nickname), avatar: avatar_link(gravatar) })),
         // Only `people_nickname` can clash: `id` conflicts are handled above.
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             Err(ApiError::Conflict("That nickname is taken.".to_owned()))
         }
         Err(e) => Err(e.into()),
     }
+}
+
+#[derive(Deserialize)]
+struct GravatarChoice {
+    show: bool,
+}
+
+/// Shows or hides the signed-in person's Gravatar next to their posts.
+/// Showing it gives the picture a random id; hiding it forgets the id, so
+/// links to it stop working, and showing it again makes a new one.
+async fn set_gravatar(
+    State(pool): State<PgPool>,
+    author: Author,
+    Json(choice): Json<GravatarChoice>,
+) -> Result<Json<Me>, ApiError> {
+    let person = author.required()?;
+    let row: Option<(String, Option<Uuid>)> = sqlx::query_as(
+        "UPDATE people
+            SET gravatar = CASE WHEN $2 THEN COALESCE(gravatar, gen_random_uuid()) END
+          WHERE id = $1
+      RETURNING nickname, gravatar",
+    )
+    .bind(person.id)
+    .bind(choice.show)
+    .fetch_optional(&pool)
+    .await?;
+    let (nickname, gravatar) = row.ok_or_else(|| ApiError::Forbidden("Choose a nickname first.".to_owned()))?;
+    Ok(Json(Me { nickname: Some(nickname), avatar: avatar_link(gravatar) }))
+}
+
+/// Someone's Gravatar, while they choose to show it. The API fetches it, so
+/// the page never sees the hash of the email that Gravatar files it under.
+/// Browsers may keep a copy for an hour, but shared caches keep none, so a
+/// hidden picture can't be fetched again.
+async fn avatar(State(app): State<AppState>, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT email FROM people WHERE gravatar = $1")
+        .bind(id)
+        .fetch_optional(&app.pool)
+        .await?;
+    let Some((email,)) = row else {
+        return Err(ApiError::NoPicture);
+    };
+    let picture = app.gravatar.picture(&email).await.map_err(|err| {
+        eprintln!("gravatar: {err}");
+        ApiError::Unavailable("Gravatar isn't answering. Try again later.".to_owned())
+    })?;
+    let Some(picture) = picture else {
+        return Err(ApiError::NoPicture);
+    };
+    let headers = [
+        (CONTENT_TYPE, picture.content_type),
+        (CACHE_CONTROL, "private, max-age=3600"),
+        (X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    ];
+    Ok((headers, picture.bytes).into_response())
 }
 
 /// The nickname someone posts under, or why they can't post yet.
@@ -362,8 +453,9 @@ async fn load_thread(pool: &PgPool, id: i64, viewer: Option<Uuid>) -> Result<Thr
     // A message shows its author's nickname as it is now, so a name always
     // means one person. `author_name` is the name at the time of posting,
     // for messages whose author has no row in `people`.
-    let rows: Vec<(i64, Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT m.id, m.author_id, COALESCE(p.nickname, m.author_name), m.body, m.created_at
+    let rows: Vec<MessageRow> = sqlx::query_as(
+        "SELECT m.id, m.author_id, COALESCE(p.nickname, m.author_name) AS author_name,
+                p.gravatar, m.body, m.created_at
            FROM messages m
            LEFT JOIN people p ON p.id = m.author_id
           WHERE m.thread_id = $1
@@ -374,12 +466,13 @@ async fn load_thread(pool: &PgPool, id: i64, viewer: Option<Uuid>) -> Result<Thr
     .await?;
     let messages = rows
         .into_iter()
-        .map(|(id, author, author_name, body, created_at)| Message {
-            id,
-            author_name,
-            body,
-            created_at,
-            mine: viewer == Some(author),
+        .map(|row| Message {
+            id: row.id,
+            author_name: row.author_name,
+            avatar: avatar_link(row.gravatar),
+            body: row.body,
+            created_at: row.created_at,
+            mine: viewer == Some(row.author_id),
         })
         .collect();
     Ok(Thread {
@@ -531,6 +624,11 @@ fn valid_nickname(text: &str) -> Result<String, ApiError> {
         return Err(ApiError::BadRequest("That nickname is reserved.".to_owned()));
     }
     Ok(nickname.to_owned())
+}
+
+/// Where the page fetches a Gravatar shown under `id`.
+fn avatar_link(id: Option<Uuid>) -> Option<String> {
+    id.map(|id| format!("/api/avatars/{id}"))
 }
 
 /// Trims `text` and checks it is neither empty nor longer than `max` characters.

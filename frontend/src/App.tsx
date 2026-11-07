@@ -4,7 +4,7 @@ import { type Me, type Pin, type Thread, ApiError, api, problem } from './api'
 import { type Session, currentSession, onSignOut, signIn, signOut } from './auth'
 import { type Focus, MapView, type Spot } from './MapView'
 import { ComposePanel, PickPanel, ThreadPanel, type View } from './Panel'
-import { Button, Chip, LiveChip, TextButton } from './ui'
+import { Avatar, Button, Chip, LiveChip, TextButton } from './ui'
 
 /** Threads are pinned to a 0.001° grid (about 100 m); the server snaps too. */
 const snap = (x: number) => Math.round(x * 1000) / 1000
@@ -207,14 +207,17 @@ export function App() {
         {session ? (
           <>
             {account && (account.nickname === null || naming) ? (
-              <NicknameForm
-                current={account.nickname}
-                onSaved={(next) => {
-                  setAccount(next)
-                  setNaming(false)
-                }}
-                onCancel={account.nickname ? () => setNaming(false) : undefined}
-              />
+              <>
+                <NicknameForm
+                  current={account.nickname}
+                  onSaved={(next) => {
+                    setAccount(next)
+                    setNaming(false)
+                  }}
+                  onClose={account.nickname ? () => setNaming(false) : undefined}
+                />
+                {account.nickname && <GravatarSwitch account={account} onSaved={setAccount} />}
+              </>
             ) : (
               view.kind !== 'compose' && (
               <Button
@@ -230,6 +233,7 @@ export function App() {
               )
             )}
             <p className="mt-3 flex min-w-0 items-center gap-1.5 text-[12px] text-fg-3">
+              <Avatar src={account?.avatar ?? null} className="size-4" />
               <span className="truncate">
                 {account?.nickname ? (
                   <>
@@ -242,7 +246,7 @@ export function App() {
               {account?.nickname && !naming && (
                 <>
                   <span aria-hidden>·</span>
-                  <TextButton onClick={() => setNaming(true)}>Change</TextButton>
+                  <TextButton onClick={() => setNaming(true)}>Edit</TextButton>
                 </>
               )}
               <span aria-hidden>·</span>
@@ -287,11 +291,11 @@ export function App() {
 function NicknameForm({
   current,
   onSaved,
-  onCancel,
+  onClose,
 }: {
   current: string | null
   onSaved: (me: Me) => void
-  onCancel?: () => void
+  onClose?: () => void
 }) {
   const [text, setText] = useState(current ?? '')
   const [busy, setBusy] = useState(false)
@@ -332,9 +336,9 @@ function NicknameForm({
         <Button type="submit" variant="accent" disabled={busy || !fits}>
           {busy ? 'Saving…' : 'Save'}
         </Button>
-        {onCancel && (
-          <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
+        {onClose && (
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Close
           </Button>
         )}
       </div>
@@ -347,6 +351,59 @@ function NicknameForm({
         </p>
       )}
     </form>
+  )
+}
+
+/**
+ * Showing a Gravatar next to your posts, or not. It saves at once. Champt
+ * fetches the picture itself, so no browser sees the hash of your email.
+ */
+function GravatarSwitch({ account, onSaved }: { account: Me; onSaved: (me: Me) => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const shown = account.avatar !== null
+
+  async function toggle() {
+    setBusy(true)
+    setError(null)
+    try {
+      onSaved(await api.setGravatar(!shown))
+    } catch (e) {
+      setError(problem(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center gap-2">
+        <label className="flex min-w-0 flex-1 items-center gap-2 text-[13px] font-medium text-fg">
+          <input
+            type="checkbox"
+            checked={shown}
+            disabled={busy}
+            onChange={toggle}
+            className="size-4 shrink-0 accent-action"
+          />
+          Show my Gravatar next to my posts
+        </label>
+        <Avatar
+          src={account.avatar}
+          className="size-6"
+          missing={<span className="shrink-0 text-[12px] text-fg-3">None found</span>}
+        />
+      </div>
+      <p className="mt-1.5 text-[12px] text-fg-3">
+        Champt fetches it for you, so your email stays private. People may still recognise the picture if you use
+        it elsewhere.
+      </p>
+      {error && (
+        <p role="alert" className="mt-2 rounded-sm bg-danger-soft px-3 py-2 text-[12px] text-danger-strong">
+          {error}
+        </p>
+      )}
+    </div>
   )
 }
 
