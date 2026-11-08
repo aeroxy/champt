@@ -376,10 +376,6 @@ function Composer({
         </Button>
       </div>
       {hint && <p className="mt-2 text-[12px] text-fg-3">{hint}</p>}
-      <p className="mt-2 text-[12px] text-fg-3">
-        Photos and videos stay on YourImageShare after the thread is gone. To delete one later, copy the link in its
-        Delete tab before you post.
-      </p>
       {error && (
         <p role="alert" className="mt-2 rounded-sm bg-danger-soft px-3 py-2 text-[12px] text-danger-strong">
           {error}
