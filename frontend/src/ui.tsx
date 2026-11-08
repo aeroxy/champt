@@ -1,4 +1,5 @@
 import { type ButtonHTMLAttributes, type ReactNode, useState } from 'react'
+import type { Media } from './api'
 
 type Variant = 'primary' | 'accent' | 'secondary' | 'ghost'
 
@@ -75,6 +76,47 @@ export function Avatar({
       onError={() => setFailed(src)}
       className={`shrink-0 rounded-full bg-muted object-cover ${className}`}
     />
+  )
+}
+
+/**
+ * A photo or video posted with a message, from YourImageShare, in a box of
+ * fixed height so the thread doesn't shift as it loads. A photo opens full
+ * size in a new tab. Its uploader may delete it there at any time.
+ */
+export function MediaView({ media }: { media: Media }) {
+  // The link that failed, so a new link gets a fresh try.
+  const [failed, setFailed] = useState<string | null>(null)
+  const frame = 'block h-56 w-full rounded-md border border-border bg-sunken'
+  if (failed === media.url) {
+    return (
+      <p className={`${frame} grid place-items-center text-[12px] text-fg-3`}>
+        This {media.kind === 'video' ? 'video' : 'photo'} isn't available.
+      </p>
+    )
+  }
+  if (media.kind === 'video') {
+    return (
+      <video
+        src={media.url}
+        controls
+        playsInline
+        preload="metadata"
+        onError={() => setFailed(media.url)}
+        className={`${frame} object-contain`}
+      />
+    )
+  }
+  return (
+    <a href={media.url} target="_blank" rel="noopener noreferrer" title="Open full size">
+      <img
+        src={media.url}
+        alt="Photo"
+        loading="lazy"
+        onError={() => setFailed(media.url)}
+        className={`${frame} object-contain`}
+      />
+    </a>
   )
 }
 

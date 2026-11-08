@@ -547,12 +547,68 @@ async fn pins_are_snapped_to_about_100_m() {
 }
 
 #[tokio::test]
+async fn a_message_runs_up_to_280_characters() {
+    let Some((app, _)) = setup().await else { return };
+    let who = member(&app, "a@example.com").await;
+    // Characters, not bytes: 280 emoji fit too.
+    for body in ["x".repeat(280), "🙂".repeat(280)] {
+        let new = json!({ "lat": 1.0, "lng": 1.0, "body": body });
+        let (status, thread) = call(&app, "POST", "/api/threads", Some(&who), Some(new)).await;
+        assert_eq!(status, StatusCode::CREATED, "{thread}");
+    }
+}
+
+#[tokio::test]
+async fn a_message_can_carry_a_photo_or_a_video() {
+    let Some((app, _)) = setup().await else { return };
+    let (a, b) = (member(&app, "a@example.com").await, member(&app, "b@example.com").await);
+
+    // A photo alone can open a thread, and the map lists it as one.
+    let photo = "https://yourimageshare.com/ib/aB3xY9qRz1.jpg";
+    let new = json!({ "lat": PARIS.0, "lng": PARIS.1, "body": "", "media": photo });
+    let (status, thread) = call(&app, "POST", "/api/threads", Some(&a), Some(new)).await;
+    assert_eq!(status, StatusCode::CREATED, "{thread}");
+    assert_eq!(thread["messages"][0]["media"], json!({ "url": photo, "kind": "image" }));
+    assert_eq!(thread["messages"][0]["body"], "");
+    let id = thread["id"].as_i64().unwrap();
+    let (_, list) = call(&app, "GET", "/api/threads?bbox=2,48,3,49", None, None).await;
+    let pin = list["threads"].as_array().unwrap().iter().find(|pin| pin["id"] == id).cloned();
+    assert_eq!(pin.unwrap()["preview"], "Photo");
+
+    // A video with words, as a reply.
+    let video = "https://yourimageshare.com/ib/Zz9Yy8Xx7W.mp4";
+    let uri = format!("/api/threads/{id}/messages");
+    let message = json!({ "body": "and a video", "media": video, "lat": PARIS.0, "lng": PARIS.1 });
+    let (status, thread) = call(&app, "POST", &uri, Some(&b), Some(message)).await;
+    assert_eq!(status, StatusCode::CREATED, "{thread}");
+    assert_eq!(thread["messages"][1]["media"], json!({ "url": video, "kind": "video" }));
+    assert_eq!(thread["messages"][1]["body"], "and a video");
+
+    // Words alone carry none.
+    let (status, thread) = reply(&app, id, &a, "just words", PARIS).await;
+    assert_eq!(status, StatusCode::CREATED, "{thread}");
+    assert_eq!(thread["messages"][2]["media"], Value::Null);
+
+    // Nothing but files on YourImageShare: a picture on someone's own server
+    // would tell them who opened the thread.
+    for other in ["https://example.com/pixel.gif", "https://yourimageshare.com/ib/aB3xY9qRz1"] {
+        let message = json!({ "body": "look", "media": other, "lat": PARIS.0, "lng": PARIS.1 });
+        let (status, answer) = call(&app, "POST", &uri, Some(&b), Some(message)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{other}: {answer}");
+    }
+    let (_, thread) = call(&app, "GET", &format!("/api/threads/{id}"), None, None).await;
+    assert_eq!(thread["messages"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn bad_requests_are_refused() {
     let Some((app, _)) = setup().await else { return };
     let who = member(&app, "a@example.com").await;
     for bad in [
         json!({ "lat": 1.0, "lng": 1.0, "body": "   " }),
-        json!({ "lat": 1.0, "lng": 1.0, "body": "x".repeat(501) }),
+        json!({ "lat": 1.0, "lng": 1.0, "body": "x".repeat(281) }),
+        json!({ "lat": 1.0, "lng": 1.0, "body": "", "media": "" }),
+        json!({ "lat": 1.0, "lng": 1.0, "body": "hi", "media": "https://example.com/pixel.gif" }),
         json!({ "lat": 89.0, "lng": 1.0, "body": "hi" }),
     ] {
         let (status, body) = call(&app, "POST", "/api/threads", Some(&who), Some(bad.clone())).await;

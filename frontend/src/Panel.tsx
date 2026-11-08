@@ -1,10 +1,16 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
-import { type Pin, type Thread, problem } from './api'
+import { Film, ImageIcon, X } from 'lucide-react'
+import { type Pin, type Post, type Thread, problem } from './api'
 import { signIn } from './auth'
 import { ago, distanceKm, timeLeft } from './format'
 import type { Spot } from './MapView'
-import { Avatar, Button, LiveChip } from './ui'
+import { Avatar, Button, LiveChip, MediaView, TextButton } from './ui'
+import { type Upload, UploadButton } from './upload'
+
+/** The API's limit, counted the same way: in characters, so an emoji is one. */
+const BODY_MAX = 280
+/** The countdown shows for the last this many characters. */
+const COUNTDOWN_FROM = 20
 
 export type View =
   | { kind: 'none' }
@@ -83,7 +89,7 @@ export function ThreadPanel({
   signedIn: boolean
   /** Null until the signed-in person chooses one. */
   nickname: string | null
-  onReply: (body: string) => Promise<void>
+  onReply: (post: Post) => Promise<void>
   onClose: () => void
 }) {
   const end = useRef<HTMLLIElement>(null)
@@ -129,7 +135,14 @@ export function ThreadPanel({
                     {ago(message.created_at, now)}
                   </time>
                 </div>
-                <p className="mt-1 text-sm break-words whitespace-pre-wrap text-fg-2">{message.body}</p>
+                {message.body && (
+                  <p className="mt-1 text-sm break-words whitespace-pre-wrap text-fg-2">{message.body}</p>
+                )}
+                {message.media && (
+                  <div className="mt-2">
+                    <MediaView media={message.media} />
+                  </div>
+                )}
               </li>
             ))}
           </ol>
@@ -231,7 +244,7 @@ export function ComposePanel({
   canPost: boolean
   signedIn: boolean
   nickname: string | null
-  onStart: (body: string) => Promise<void>
+  onStart: (post: Post) => Promise<void>
   onClose: () => void
 }) {
   return (
@@ -275,19 +288,25 @@ function Composer({
   variant: 'primary' | 'accent'
   hint?: string
   autoFocus?: boolean
-  onSubmit: (body: string) => Promise<void>
+  onSubmit: (post: Post) => Promise<void>
 }) {
   const [text, setText] = useState('')
+  /** The latest upload, which goes with the post; one per message. */
+  const [media, setMedia] = useState<Upload | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // By code point, after a trim, as the API counts.
+  const left = BODY_MAX - [...text.trim()].length
+  const ready = !busy && left >= 0 && (text.trim() !== '' || media !== null)
 
   async function send() {
-    if (busy || !text.trim()) return
+    if (!ready) return
     setBusy(true)
     setError(null)
     try {
-      await onSubmit(text)
+      await onSubmit({ body: text, media: media?.url ?? null })
       setText('')
+      setMedia(null)
     } catch (e) {
       setError(problem(e))
     } finally {
@@ -314,21 +333,53 @@ function Composer({
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send()
         }}
-        maxLength={500}
         rows={3}
         placeholder={placeholder}
         autoFocus={autoFocus}
         className={`block w-full resize-none px-3 py-2 ${field}`}
       />
+      <div className="mt-2">
+        <UploadButton onUpload={setMedia} />
+      </div>
+      {media && (
+        <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1.5">
+          {media.thumb ? (
+            <img src={media.thumb} alt="" className="size-8 shrink-0 rounded-sm object-cover" />
+          ) : media.type === 'video' ? (
+            <Film className="size-4 shrink-0 text-fg-3" />
+          ) : (
+            <ImageIcon className="size-4 shrink-0 text-fg-3" />
+          )}
+          <span className="min-w-0 flex-1 truncate text-[12px] text-fg-2">
+            {media.type === 'video' ? 'Video' : 'Photo'} goes with this post
+          </span>
+          <TextButton type="button" className="text-[12px]" onClick={() => setMedia(null)}>
+            Remove
+          </TextButton>
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-[12px] text-fg-3">
           as <span className="font-mono text-fg-2">{nickname}</span>
         </span>
-        <Button type="submit" variant={variant} disabled={busy || !text.trim()}>
+        {left <= COUNTDOWN_FROM && (
+          <span
+            aria-live="polite"
+            title={`${BODY_MAX} characters at most`}
+            className={`text-[12px] tabular ${left < 0 ? 'font-semibold text-danger-strong' : 'text-fg-3'}`}
+          >
+            {left}
+          </span>
+        )}
+        <Button type="submit" variant={variant} disabled={!ready}>
           {busy ? 'Posting…' : submit}
         </Button>
       </div>
       {hint && <p className="mt-2 text-[12px] text-fg-3">{hint}</p>}
+      <p className="mt-2 text-[12px] text-fg-3">
+        Photos and videos stay on YourImageShare after the thread is gone. To delete one later, copy the link in its
+        Delete tab before you post.
+      </p>
       {error && (
         <p role="alert" className="mt-2 rounded-sm bg-danger-soft px-3 py-2 text-[12px] text-danger-strong">
           {error}

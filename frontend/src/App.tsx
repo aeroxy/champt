@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { LocateFixed, LogIn, Plus, RefreshCw } from 'lucide-react'
-import { type Me, type Pin, type Thread, ApiError, api, problem } from './api'
+import { type Me, type Pin, type Post, type Thread, ApiError, api, problem } from './api'
 import { type Session, currentSession, onSignOut, signIn, signOut } from './auth'
 import { type Focus, MapView, type Spot } from './MapView'
 import { ComposePanel, PickPanel, ThreadPanel, type View } from './Panel'
@@ -126,20 +126,20 @@ export function App() {
     if (view.kind === 'thread') openThread(view.id)
   }
 
-  async function start(body: string) {
+  async function start(post: Post) {
     if (!me) throw new ApiError('Your location is not known yet.', 0)
-    const created = await api.start({ lat: snap(me.lat), lng: snap(me.lng), body })
+    const created = await api.start({ ...post, lat: snap(me.lat), lng: snap(me.lng) })
     setThread(created)
     setThreadError(null)
     setView({ kind: 'thread', id: created.id })
     loadPins()
   }
 
-  async function reply(body: string) {
+  async function reply(post: Post) {
     if (view.kind !== 'thread') return
     if (!me) throw new ApiError('Your location is not known yet.', 0)
     try {
-      setThread(await api.reply(view.id, { body, lat: snap(me.lat), lng: snap(me.lng) }))
+      setThread(await api.reply(view.id, { ...post, lat: snap(me.lat), lng: snap(me.lng) }))
       loadPins()
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {

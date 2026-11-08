@@ -12,15 +12,26 @@ export type Pin = {
   expires_at: string
 }
 
+/** A photo or video posted with a message: a file on YourImageShare. */
+export type Media = {
+  url: string
+  kind: 'image' | 'video'
+}
+
 export type Message = {
   id: number
   author_name: string
   /** A link to the author's Gravatar, while they choose to show it. */
   avatar: string | null
+  /** Empty when the message is only a photo or video. */
   body: string
+  media: Media | null
   created_at: string
   mine: boolean
 }
+
+/** What a post sends: `media` is a link the upload button got back, or null. */
+export type Post = { body: string; media: string | null }
 
 export type Thread = {
   id: number
@@ -89,9 +100,9 @@ export const api = {
   setNickname: (nickname: string) => call<Me>('/api/me', { body: { nickname }, method: 'PUT' }),
   /** Shows or hides the signed-in person's Gravatar next to their posts; 403 before a nickname. */
   setGravatar: (show: boolean) => call<Me>('/api/me/gravatar', { body: { show }, method: 'PUT' }),
-  start: (thread: { lat: number; lng: number; body: string }) => call<Thread>('/api/threads', { body: thread }),
+  start: (thread: Post & { lat: number; lng: number }) => call<Thread>('/api/threads', { body: thread }),
   /** `lat`/`lng` is where the poster is, checked against the reply radius and not stored. */
-  reply: (id: number, message: { body: string; lat: number; lng: number }) =>
+  reply: (id: number, message: Post & { lat: number; lng: number }) =>
     call<Thread>(`/api/threads/${id}/messages`, { body: message }),
 }
 

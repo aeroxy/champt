@@ -16,6 +16,10 @@
 //! compare people by an id derived from their email; the email sits in
 //! `people` for the operator's audits, and neither it nor anything derived
 //! from it leaves the server. Reading needs no account.
+//!
+//! A message can carry a photo or video. The page uploads it straight to
+//! YourImageShare, and the API keeps only the link, after checking that it
+//! points to a file there (see `media_kind`).
 
 mod auth;
 mod geo;
@@ -55,8 +59,15 @@ const NICKNAME_LEN: std::ops::RangeInclusive<usize> = 3..=20;
 /// Nicknames nobody may take, so nobody can pass for the operator.
 const RESERVED_NICKNAMES: &[&str] =
     &["admin", "administrator", "aero", "champt", "mod", "moderator", "support", "system", "anonymous"];
-const BODY_MAX: usize = 500;
+/// Characters, not bytes: an emoji is one.
+const BODY_MAX: usize = 280;
 const PREVIEW_MAX: usize = 140;
+/// Where media lives. A link anywhere else is refused, so nobody can post a
+/// picture from their own server and learn who opens the thread.
+const MEDIA_HOST: &str = "https://yourimageshare.com/ib/";
+/// The file types YourImageShare takes, by the extension on its links.
+const IMAGE_TYPES: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "tif", "tiff", "heic", "heif"];
+const VIDEO_TYPES: &[&str] = &["mp4", "webm", "mov", "avi", "mkv", "mpeg", "mpg", "wmv", "flv", "3gp"];
 /// The most pins one viewport returns, most recently extended first.
 const LIST_LIMIT: i64 = 500;
 
@@ -270,11 +281,21 @@ struct Message {
     author_name: String,
     /// A link to the author's Gravatar, while they choose to show it.
     avatar: Option<String>,
+    /// Empty when the message is only a photo or video.
     body: String,
+    media: Option<Media>,
     created_at: DateTime<Utc>,
     /// Posted by the asker. Ids stay on the server, so nobody can post as
     /// someone else just by reading a thread.
     mine: bool,
+}
+
+/// A photo or video posted with a message: a file on YourImageShare.
+#[derive(Serialize)]
+struct Media {
+    url: String,
+    /// `image` or `video`, so the page knows how to show it.
+    kind: &'static str,
 }
 
 /// A message as stored, with its author's nickname and Gravatar id as they are now.
@@ -285,6 +306,7 @@ struct MessageRow {
     author_name: String,
     gravatar: Option<Uuid>,
     body: String,
+    media: Option<String>,
     created_at: DateTime<Utc>,
 }
 
@@ -455,7 +477,7 @@ async fn load_thread(pool: &PgPool, id: i64, viewer: Option<Uuid>) -> Result<Thr
     // for messages whose author has no row in `people`.
     let rows: Vec<MessageRow> = sqlx::query_as(
         "SELECT m.id, m.author_id, COALESCE(p.nickname, m.author_name) AS author_name,
-                p.gravatar, m.body, m.created_at
+                p.gravatar, m.body, m.media, m.created_at
            FROM messages m
            LEFT JOIN people p ON p.id = m.author_id
           WHERE m.thread_id = $1
@@ -471,6 +493,8 @@ async fn load_thread(pool: &PgPool, id: i64, viewer: Option<Uuid>) -> Result<Thr
             author_name: row.author_name,
             avatar: avatar_link(row.gravatar),
             body: row.body,
+            // Every stored link was checked on the way in.
+            media: row.media.map(|url| Media { kind: media_kind(&url).unwrap_or("image"), url }),
             created_at: row.created_at,
             mine: viewer == Some(row.author_id),
         })
@@ -491,7 +515,10 @@ async fn load_thread(pool: &PgPool, id: i64, viewer: Option<Uuid>) -> Result<Thr
 struct NewThread {
     lat: f64,
     lng: f64,
+    /// May be empty when `media` is given.
     body: String,
+    /// A link to a file the page uploaded to YourImageShare.
+    media: Option<String>,
 }
 
 async fn create_thread(
@@ -501,7 +528,8 @@ async fn create_thread(
 ) -> Result<(StatusCode, Json<Thread>), ApiError> {
     let person = author.required()?;
     let (lat, lng) = geo::snap(new.lat, new.lng).map_err(|e| ApiError::BadRequest(e.to_owned()))?;
-    let body = clean(&new.body, BODY_MAX, "message")?;
+    let media = media_link(new.media)?;
+    let body = clean(&new.body, BODY_MAX, "message", media.is_none())?;
     let name = nickname_of(&pool, &person).await?;
 
     let mut tx = pool.begin().await?;
@@ -516,17 +544,18 @@ async fn create_thread(
     .bind(lat)
     .bind(lng)
     .bind(person.id)
-    .bind(preview(&body))
+    .bind(preview(&body, media.as_deref()))
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO messages (thread_id, author_id, author_name, body)
-         VALUES ($1, $2, $3, $4)",
+        "INSERT INTO messages (thread_id, author_id, author_name, body, media)
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(id)
     .bind(person.id)
     .bind(&name)
     .bind(&body)
+    .bind(&media)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -536,7 +565,10 @@ async fn create_thread(
 
 #[derive(Deserialize)]
 struct NewMessage {
+    /// May be empty when `media` is given.
     body: String,
+    /// A link to a file the page uploaded to YourImageShare.
+    media: Option<String>,
     /// Where the poster is, for the reply radius. Optional here so that a
     /// missing position gets a clear answer instead of a parse error.
     lat: Option<f64>,
@@ -557,7 +589,8 @@ async fn add_message(
         return Err(ApiError::BadRequest("Share your location to reply.".to_owned()));
     };
     let here = geo::snap(lat, lng).map_err(|e| ApiError::BadRequest(e.to_owned()))?;
-    let body = clean(&new.body, BODY_MAX, "message")?;
+    let media = media_link(new.media)?;
+    let body = clean(&new.body, BODY_MAX, "message", media.is_none())?;
     let name = nickname_of(&pool, &person).await?;
 
     let pin: Option<(f64, f64)> =
@@ -588,14 +621,15 @@ async fn add_message(
               WHERE id = $1 AND expires_at > now()
           RETURNING id
          )
-         INSERT INTO messages (thread_id, author_id, author_name, body)
-         SELECT id, $2, $3, $4 FROM thread
+         INSERT INTO messages (thread_id, author_id, author_name, body, media)
+         SELECT id, $2, $3, $4, $5 FROM thread
          RETURNING id",
     )
     .bind(id)
     .bind(person.id)
     .bind(&name)
     .bind(&body)
+    .bind(&media)
     .fetch_optional(&pool)
     .await?;
     if posted.is_none() {
@@ -631,10 +665,11 @@ fn avatar_link(id: Option<Uuid>) -> Option<String> {
     id.map(|id| format!("/api/avatars/{id}"))
 }
 
-/// Trims `text` and checks it is neither empty nor longer than `max` characters.
-fn clean(text: &str, max: usize, what: &str) -> Result<String, ApiError> {
+/// Trims `text` and checks it is no longer than `max` characters, and not
+/// empty if `required`.
+fn clean(text: &str, max: usize, what: &str, required: bool) -> Result<String, ApiError> {
     let text = text.trim();
-    if text.is_empty() {
+    if required && text.is_empty() {
         return Err(ApiError::BadRequest(format!("The {what} is empty.")));
     }
     if text.chars().count() > max {
@@ -643,9 +678,42 @@ fn clean(text: &str, max: usize, what: &str) -> Result<String, ApiError> {
     Ok(text.to_owned())
 }
 
-/// The opening message as the map's thread list shows it.
-fn preview(body: &str) -> String {
+/// The media link a post carries, if any: a file on YourImageShare.
+fn media_link(link: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(link) = link.map(|link| link.trim().to_owned()).filter(|link| !link.is_empty()) else {
+        return Ok(None);
+    };
+    if media_kind(&link).is_none() {
+        return Err(ApiError::BadRequest("Only files uploaded to YourImageShare can be attached.".to_owned()));
+    }
+    Ok(Some(link))
+}
+
+/// `image` or `video` for a link to a file on YourImageShare, by its
+/// extension; None for any other link, including the file's page there.
+fn media_kind(link: &str) -> Option<&'static str> {
+    let (id, extension) = link.strip_prefix(MEDIA_HOST)?.split_once('.')?;
+    if !(1..=32).contains(&id.len()) || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let listed = |types: &[&str]| types.iter().any(|t| t.eq_ignore_ascii_case(extension));
+    if listed(IMAGE_TYPES) {
+        Some("image")
+    } else if listed(VIDEO_TYPES) {
+        Some("video")
+    } else {
+        None
+    }
+}
+
+/// The opening message as the map's thread list shows it, or "Photo" or
+/// "Video" when that is all it is.
+fn preview(body: &str, media: Option<&str>) -> String {
     let line = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        let video = media.and_then(media_kind) == Some("video");
+        return if video { "Video" } else { "Photo" }.to_owned();
+    }
     if line.chars().count() <= PREVIEW_MAX {
         return line;
     }
@@ -669,20 +737,52 @@ mod tests {
 
     #[test]
     fn clean_trims_and_bounds() {
-        assert_eq!(clean("  hi  ", 5, "name").ok(), Some("hi".to_owned()));
-        assert!(clean("   ", 5, "name").is_err());
-        assert!(clean("abcdef", 5, "name").is_err());
+        assert_eq!(clean("  hi  ", 5, "name", true).ok(), Some("hi".to_owned()));
+        assert!(clean("   ", 5, "name", true).is_err());
+        assert_eq!(clean("   ", 5, "name", false).ok(), Some(String::new()));
+        assert!(clean("abcdef", 5, "name", false).is_err());
         // Characters, not bytes: five emoji fit in five.
-        assert!(clean("🙂🙂🙂🙂🙂", 5, "name").is_ok());
+        assert!(clean("🙂🙂🙂🙂🙂", 5, "name", true).is_ok());
+    }
+
+    #[test]
+    fn media_must_be_a_file_on_yourimageshare() {
+        assert_eq!(media_kind("https://yourimageshare.com/ib/aB3xY9qRz1.png"), Some("image"));
+        assert_eq!(media_kind("https://yourimageshare.com/ib/aB3xY9qRz1.JPG"), Some("image"));
+        assert_eq!(media_kind("https://yourimageshare.com/ib/aB3xY9qRz1.mp4"), Some("video"));
+        for other in [
+            "https://example.com/ib/aB3xY9qRz1.png",
+            "http://yourimageshare.com/ib/aB3xY9qRz1.png",
+            "https://yourimageshare.com.example.com/ib/aB3xY9qRz1.png",
+            // The file's page on YourImageShare, not the file.
+            "https://yourimageshare.com/ib/aB3xY9qRz1",
+            "https://yourimageshare.com/ib/aB3xY9qRz1.html",
+            "https://yourimageshare.com/ib/aB3xY9qRz1.png?size=big",
+            "https://yourimageshare.com/ib/../aB3xY9qRz1.png",
+            "https://yourimageshare.com/ib/a/b.png",
+            "javascript:alert(1)",
+        ] {
+            assert_eq!(media_kind(other), None, "{other}");
+        }
+        assert_eq!(media_link(Some("  ".to_owned())).ok(), Some(None));
+        assert!(media_link(Some("https://example.com/pixel.gif".to_owned())).is_err());
     }
 
     #[test]
     fn preview_is_one_line_and_short() {
-        assert_eq!(preview("hello\n\nworld"), "hello world");
+        assert_eq!(preview("hello\n\nworld", None), "hello world");
         let long = "word ".repeat(100);
-        let p = preview(&long);
+        let p = preview(&long, None);
         assert!(p.chars().count() <= PREVIEW_MAX);
         assert!(p.ends_with('…'));
-        assert_eq!(preview("short"), "short");
+        assert_eq!(preview("short", None), "short");
+    }
+
+    #[test]
+    fn a_thread_that_opens_with_only_media_says_what_it_is() {
+        assert_eq!(preview("", Some("https://yourimageshare.com/ib/aB3xY9qRz1.webp")), "Photo");
+        assert_eq!(preview(" \n", Some("https://yourimageshare.com/ib/aB3xY9qRz1.mov")), "Video");
+        let words = preview("look", Some("https://yourimageshare.com/ib/aB3xY9qRz1.mov"));
+        assert_eq!(words, "look");
     }
 }
