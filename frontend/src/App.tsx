@@ -2,8 +2,9 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { LocateFixed, LogIn, Plus, RefreshCw } from 'lucide-react'
 import { type Me, type Pin, type Post, type Thread, ApiError, api, problem } from './api'
 import { type Session, currentSession, onSignOut, signIn, signOut } from './auth'
+import { linkedThread, threadPath } from './link'
 import { type Focus, MapView, type Spot } from './MapView'
-import { ComposePanel, PickPanel, ThreadPanel, type View } from './Panel'
+import { ComposePanel, PickPanel, ThreadPanel, type ThreadError, type View } from './Panel'
 import { Avatar, Button, Chip, LiveChip, TextButton } from './ui'
 
 /** Threads are pinned to a 0.001° grid (about 100 m); the server snaps too. */
@@ -15,14 +16,20 @@ export function App() {
   const now = useNow(30_000)
   const [pins, setPins] = useState<Pin[]>([])
   const [loading, setLoading] = useState(false)
-  const [view, setView] = useState<View>({ kind: 'none' })
+  // A thread's link opens the page on that thread.
+  const [view, setView] = useState<View>(() => {
+    const id = linkedThread(window.location.pathname)
+    return id === null ? { kind: 'none' } : { kind: 'thread', id }
+  })
   const [thread, setThread] = useState<Thread | null>(null)
-  const [threadError, setThreadError] = useState<string | null>(null)
+  const [threadError, setThreadError] = useState<ThreadError | null>(null)
   const [me, setMe] = useState<Spot | null>(null)
   const [location, setLocation] = useState<Location>('locating')
   const [focus, setFocus] = useState<Focus | null>(null)
   const [session, setSession] = useState<Session | null>(currentSession)
   const bbox = useRef<string | null>(null)
+  /** Whether the map has gone to a linked thread, so your position doesn't pull it away. */
+  const atLink = useRef(false)
 
   /** Who the API says is signed in; null while unknown. */
   const [account, setAccount] = useState<Me | null>(null)
@@ -48,7 +55,8 @@ export function App() {
   }, [session])
   const pinsRequest = useRef<AbortController | null>(null)
 
-  // Follow the person's position, and fly there the first time it arrives.
+  // Follow the person's position, and fly there the first time it arrives,
+  // unless a link has already taken the map to its thread.
   useEffect(() => {
     if (!('geolocation' in navigator)) {
       setLocation('off')
@@ -62,7 +70,7 @@ export function App() {
         setLocation('on')
         if (first) {
           first = false
-          setFocus({ spot, zoom: 15, key: Date.now() })
+          if (!atLink.current) setFocus({ spot, zoom: 15, key: Date.now() })
         }
       },
       // A later failure keeps the last good position.
@@ -96,17 +104,39 @@ export function App() {
     [loadPins],
   )
 
-  const openThread = useCallback(async (id: number) => {
+  /** Shows a thread, and gives it back once loaded; null if it's gone or didn't load. */
+  const openThread = useCallback(async (id: number): Promise<Thread | null> => {
     setView({ kind: 'thread', id })
     setThread((shown) => (shown?.id === id ? shown : null))
     setThreadError(null)
     try {
-      setThread(await api.thread(id))
+      const loaded = await api.thread(id)
+      setThread(loaded)
+      return loaded
     } catch (e) {
       setThread(null)
-      setThreadError(problem(e))
+      setThreadError({ text: problem(e), gone: e instanceof ApiError && e.status === 404 })
+      return null
     }
   }, [])
+
+  // A thread's link opens that thread, and takes the map to it.
+  useEffect(() => {
+    const id = linkedThread(window.location.pathname)
+    if (id === null) return
+    openThread(id).then((shown) => {
+      if (!shown) return
+      atLink.current = true
+      setFocus({ spot: { lat: shown.lat, lng: shown.lng }, zoom: 15, key: Date.now() })
+    })
+  }, [openThread])
+
+  // The address bar shows the open thread's link, so it can be shared as it
+  // is, and a sign-in comes back to it.
+  useEffect(() => {
+    const path = view.kind === 'thread' ? threadPath(view.id) : '/'
+    if (window.location.pathname !== path) history.replaceState(null, '', path)
+  }, [view])
 
   const onPick = useCallback(
     (ids: number[]) => (ids.length === 1 ? openThread(ids[0]) : setView({ kind: 'pick', ids })),
@@ -144,7 +174,7 @@ export function App() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         setThread(null)
-        setThreadError(e.message)
+        setThreadError({ text: e.message, gone: true })
         loadPins()
         return
       }

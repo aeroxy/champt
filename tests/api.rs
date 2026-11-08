@@ -72,6 +72,28 @@ async fn stand_in_gravatar() -> champt::Gravatar {
     champt::Gravatar::at(&base)
 }
 
+/// The app's page as a stand-in deployment serves it.
+const SHELL: &str = "<!doctype html><html><head><title>Champt</title></head><body><div id=\"root\"></div></body></html>";
+
+/// A stand-in for the deployment, serving `SHELL` at `/index.html` as Vercel
+/// serves the built app. Gives back its host, for requests to come in on.
+async fn stand_in_deployment() -> String {
+    let deployment = Router::new().route("/index.html", get(|| async { ([(CONTENT_TYPE, "text/html")], SHELL) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move { axum::serve(listener, deployment).await.unwrap() });
+    host
+}
+
+/// GETs a page as a browser or a chat app's previewer would, on `host`.
+async fn page(app: &Router, uri: &str, host: &str) -> (StatusCode, HeaderMap, String) {
+    let request = Request::builder().uri(uri).header("host", host).body(Body::empty()).unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
 fn sha256_hex(text: &str) -> String {
     Sha256::digest(text).iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -468,8 +490,9 @@ async fn an_expired_thread_is_gone() {
         .await
         .unwrap();
 
-    let (status, _) = call(&app, "GET", &format!("/api/threads/{id}"), Some(&a), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let uri = format!("/api/threads/{id}");
+    let (status, answer) = call(&app, "GET", &uri, Some(&a), None).await;
+    assert_eq!((status, answer), (StatusCode::NOT_FOUND, json!({ "error": "This thread is gone." })));
     let (status, _) = reply(&app, id, &b, "too late", (-33.857, 151.215)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (_, list) = call(&app, "GET", "/api/threads?bbox=151,-34,152,-33", None, None).await;
@@ -483,6 +506,68 @@ async fn an_expired_thread_is_gone() {
         .await
         .unwrap();
     assert_eq!(left, 0);
+
+    // A link to it still says it is gone, like a link to a thread that never was.
+    for uri in [uri, format!("/api/threads/{}", i64::MAX)] {
+        let (status, answer) = call(&app, "GET", &uri, None, None).await;
+        assert_eq!((status, answer), (StatusCode::NOT_FOUND, json!({ "error": "This thread is gone." })), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_threads_link_previews_it_in_chat_apps() {
+    let Some((app, pool)) = setup().await else { return };
+    let (a, b) = (member(&app, "a@example.com").await, member(&app, "b@example.com").await);
+    let host = stand_in_deployment().await;
+
+    // A thread opening with a photo, and words that would break out of a tag.
+    let photo = "https://yourimageshare.com/ib/aB3xY9qRz1.jpg";
+    let new = json!({ "lat": PARIS.0, "lng": PARIS.1, "body": "Picnic <b>at</b> \"six\" & bread", "media": photo });
+    let (_, thread) = call(&app, "POST", "/api/threads", Some(&a), Some(new)).await;
+    let id = thread["id"].as_i64().unwrap();
+    reply(&app, id, &b, "on my way", PARIS).await;
+
+    let (status, headers, html) = page(&app, &format!("/t/{id}"), &host).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert_eq!(headers["content-type"], "text/html; charset=utf-8");
+    assert_eq!(headers["cache-control"], "public, max-age=0, s-maxage=60");
+    for tag in [
+        r#"<meta property="og:title" content="Picnic &lt;b&gt;at&lt;/b&gt; &quot;six&quot; &amp; bread" />"#.to_owned(),
+        r#"<meta property="og:description" content="2 messages on Champt, chat threads pinned to places on a map." />"#.to_owned(),
+        format!(r#"<meta property="og:image" content="{photo}" />"#),
+        format!(r#"<meta property="og:url" content="http://{host}/t/{id}" />"#),
+        r#"<meta name="twitter:card" content="summary_large_image" />"#.to_owned(),
+    ] {
+        assert!(html.contains(&tag), "{tag}\n{html}");
+    }
+    // It is the app's own page, so the link still opens the app.
+    assert!(html.contains(r#"<div id="root"></div>"#) && !html.contains("<b>"), "{html}");
+    // A trailing slash is the same link.
+    assert_eq!(page(&app, &format!("/t/{id}/"), &host).await.2, html);
+
+    // Once the thread expires, and after its row is deleted, the preview says it is gone.
+    sqlx::query("UPDATE threads SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let gone = r#"<meta property="og:title" content="This thread is gone" />"#;
+    for uri in [format!("/t/{id}"), format!("/t/{}", i64::MAX)] {
+        let (status, _, html) = page(&app, &uri, &host).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains(gone) && !html.contains("og:image"), "{uri}\n{html}");
+    }
+
+    // A link that names no thread is the app as it is, which shows the map.
+    for uri in ["/t/abc", "/t/017"] {
+        assert_eq!(page(&app, uri, &host).await.2, SHELL, "{uri}");
+    }
+
+    // Without the app's page there is nothing to show, and nothing to keep.
+    let (status, headers, words) = page(&app, &format!("/t/{id}"), "127.0.0.1:9").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(headers["cache-control"], "no-store");
+    assert!(words.contains("Try again"), "{words}");
 }
 
 #[tokio::test]

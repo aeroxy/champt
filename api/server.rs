@@ -1,5 +1,6 @@
 //! The Vercel Function. `vercel.json` rewrites every `/api/*` request here,
-//! and the router still sees the original path.
+//! and every thread's link (`/t/{id}`), and the router still sees the
+//! original path.
 
 use tower::ServiceBuilder;
 use vercel_runtime::{Error, axum::VercelLayer};

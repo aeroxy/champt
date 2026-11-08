@@ -6,6 +6,7 @@
   "regions": ["sin1"],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/server" },
+    { "source": "/t/:id", "destination": "/api/server" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

@@ -20,10 +20,14 @@
 //! A message can carry a photo or video. The page uploads it straight to
 //! YourImageShare, and the API keeps only the link, after checking that it
 //! points to a file there (see `media_kind`).
+//!
+//! A thread's link, `/t/{id}`, comes here too, for a page that chat apps can
+//! preview (see `page`).
 
 mod auth;
 mod geo;
 mod gravatar;
+mod page;
 
 pub use auth::Verifier;
 pub use gravatar::Gravatar;
@@ -36,7 +40,7 @@ use axum::{
     Json, Router,
     extract::{FromRef, FromRequestParts, Path, Query, State},
     http::{
-        StatusCode,
+        HeaderMap, StatusCode,
         header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS},
         request::Parts,
     },
@@ -114,7 +118,9 @@ pub fn app(pool: PgPool, verifier: Verifier, gravatar: Gravatar) -> Router {
         .route("/api/me/gravatar", put(set_gravatar))
         .route("/api/avatars/{id}", get(avatar))
         .route("/api/sign-in", get(sign_in))
-        .with_state(AppState { pool, verifier: Arc::new(verifier), gravatar })
+        .route("/t/{id}", get(thread_page))
+        .route("/t/{id}/", get(thread_page))
+        .with_state(AppState { pool, verifier: Arc::new(verifier), gravatar, http: page::client() })
 }
 
 #[derive(Clone)]
@@ -122,6 +128,8 @@ struct AppState {
     pool: PgPool,
     verifier: Arc<Verifier>,
     gravatar: Gravatar,
+    /// Fetches the app's page for a thread's link.
+    http: reqwest::Client,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -174,7 +182,8 @@ pub enum ApiError {
     /// Not available: not set up on this deployment, such as sign-in before
     /// registration, or Gravatar not answering.
     Unavailable(String),
-    /// Never existed, or expired: to a visitor the two look the same.
+    /// No such thread now: it expired (and may have been deleted since), or
+    /// it never existed. To a visitor following a link they look the same.
     NotFound,
     /// No picture to show: its owner hid it, or Gravatar has none for them.
     NoPicture,
@@ -189,7 +198,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(message) => (StatusCode::FORBIDDEN, message),
             ApiError::Conflict(message) => (StatusCode::CONFLICT, message),
             ApiError::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
-            ApiError::NotFound => (StatusCode::NOT_FOUND, "This thread has expired.".to_owned()),
+            ApiError::NotFound => (StatusCode::NOT_FOUND, "This thread is gone.".to_owned()),
             ApiError::NoPicture => (StatusCode::NOT_FOUND, "There's no picture here.".to_owned()),
             ApiError::Internal => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong. Try again.".to_owned())
@@ -448,6 +457,56 @@ async fn avatar(State(app): State<AppState>, Path(id): Path<Uuid>) -> Result<Res
         (X_CONTENT_TYPE_OPTIONS, "nosniff"),
     ];
     Ok((headers, picture.bytes).into_response())
+}
+
+/// A thread's link as a page: the app, with the thread in the tags chat apps
+/// read for a link preview, or word that it is gone (see `page`). A link
+/// that names no thread gets the app as it is, which then shows the map. The
+/// CDN may keep a page for a minute: the app loads the thread itself, so
+/// only a preview can be that far behind.
+async fn thread_page(
+    State(app): State<AppState>,
+    Path(part): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let origin = page::origin(&headers).ok_or_else(|| ApiError::BadRequest("No host to serve the page for.".to_owned()))?;
+    let shell = match page::shell(&app.http, &origin).await {
+        Ok(shell) => shell,
+        Err(err) => {
+            eprintln!("page: {err}");
+            // Plain words, not JSON: a person opening a link reads this.
+            let headers = [(CONTENT_TYPE, "text/plain; charset=utf-8"), (CACHE_CONTROL, "no-store")];
+            let words = "Champt's page didn't load. Try again in a moment.";
+            return Ok((StatusCode::SERVICE_UNAVAILABLE, headers, words).into_response());
+        }
+    };
+    let html = match page::thread_id(&part) {
+        Some(id) => page::with_preview(&shell, &thread_preview(&app.pool, id).await?, &format!("{origin}/t/{id}")),
+        None => shell,
+    };
+    let headers = [(CONTENT_TYPE, "text/html; charset=utf-8"), (CACHE_CONTROL, "public, max-age=0, s-maxage=60")];
+    Ok((headers, html).into_response())
+}
+
+/// What a link preview shows of a thread: its opening line, how many
+/// messages it has, and the photo it opens with, if any; or that it's gone.
+async fn thread_preview(pool: &PgPool, id: i64) -> Result<page::Preview, ApiError> {
+    let row: Option<(String, i32, Option<String>)> = sqlx::query_as(
+        "SELECT t.preview, t.message_count,
+                (SELECT m.media FROM messages m WHERE m.thread_id = t.id ORDER BY m.id LIMIT 1)
+           FROM threads t
+          WHERE t.id = $1 AND t.expires_at > now()",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(match row {
+        Some((opening, messages, media)) => {
+            let photo = media.filter(|link| media_kind(link) == Some("image"));
+            page::Preview::thread(opening, messages, photo)
+        }
+        None => page::Preview::gone(),
+    })
 }
 
 /// The nickname someone posts under, or why they can't post yet.

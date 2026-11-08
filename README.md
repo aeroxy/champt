@@ -11,6 +11,7 @@ An early 2013 prototype (Node and Socket.IO, live dots on a map) is on the `arch
 | A thread starts only where you are, snapped to a 0.001° grid (about 100 m) | `snap` in `src/geo.rs`; the browser rounds before sending, too |
 | A thread lives 24 hours past its last turn change | one `UPDATE` in `add_message`, `src/lib.rs`; every read filters on `expires_at > now()` |
 | The map pans worldwide, the antimeridian included, and any thread can be read | `list_threads`, `BBox` in `src/geo.rs` |
+| Every thread has a link, `/t/<id>`. The address bar shows it while the thread is open, and the link button copies it, or opens the share sheet on a phone. The link opens the thread and moves the map there; once the thread has expired, it says the thread is gone. Chat apps preview the link with the thread's opening line, how many messages it has and the photo it opens with, or say that it's gone. Signing in from a thread comes back to it | `frontend/src/link.ts`, `frontend/src/App.tsx`, `ShareButton` in `frontend/src/Panel.tsx`, `frontend/src/auth.ts`; the preview in `src/page.rs` and `thread_page` in `src/lib.rs`, where `vercel.json` sends these links |
 | Replies come only from within 100 km of a thread. The poster's position travels with the reply for the check and is not stored | `REPLY_RADIUS_KM` and `add_message` in `src/lib.rs`; the reply box in `frontend/src/Panel.tsx` |
 | A message runs up to 280 characters, counted as characters, so an emoji is one. The message box counts down the last 20 | `BODY_MAX` in `src/lib.rs` and in `frontend/src/Panel.tsx` |
 | A message can carry one photo or video, and then needs no text. The browser uploads it straight to YourImageShare with its upload button, and the API keeps only the link, refusing links to anywhere but files there. Champt never deletes media: its uploader can, with the link in the button's Delete tab, which goes away when the message box does | `media_kind` in `src/lib.rs`, `frontend/src/upload.tsx` |
@@ -24,7 +25,7 @@ Expired threads are deleted whenever someone starts a new one, so nothing runs o
 
 | Piece | Choice |
 |---|---|
-| API | Rust: axum 0.8 and sqlx with raw SQL, as one Vercel Function (`api/server.rs`) through `vercel_runtime`'s axum layer. Vercel's Rust runtime is in beta. |
+| API | Rust: axum 0.8 and sqlx with raw SQL, as one Vercel Function (`api/server.rs`) through `vercel_runtime`'s axum layer. Vercel's Rust runtime is in beta. It also serves each thread's link as a page: the app's `index.html`, fetched from the deployment itself so it loads the same build, with the thread's link-preview tags added. The CDN keeps such a page for a minute. |
 | Database | Postgres. Neon works through either its pooled or its direct connection string. Migrations in `migrations/` run when a function instance starts. |
 | Front end | React 19, Vite and Tailwind 4, built with bun and served from Vercel's CDN |
 | Map | MapLibre GL with OpenFreeMap's `positron` tiles: no key, no account |
@@ -38,8 +39,10 @@ Expired threads are deleted whenever someone starts a new one, so nothing runs o
 ```sh
 cp .env.example .env          # set DATABASE_URL
 cargo run --bin dev           # the API on http://127.0.0.1:8787
-cd frontend && bun install && bun run dev   # http://localhost:5176, proxying /api
+cd frontend && bun install && bun run dev   # http://localhost:5176, proxying /api and /t/<id>
 ```
+
+A thread's link goes through the API, as on Vercel, which builds the page from Vite's `index.html`; so a link opens only while both are running.
 
 Browsers only share location with secure pages. `localhost` counts; a LAN address over plain http does not.
 
@@ -75,6 +78,7 @@ The API tests write rows and leave them, so give them a throwaway database. With
 | `PUT` | `/api/me` | `{ nickname }` | 200 and `{ nickname, avatar }`; 400 if it breaks the rules; 409 if someone has it. Changing it frees the old one |
 | `PUT` | `/api/me/gravatar` | `{ show }` | 200 and `{ nickname, avatar }`; 403 without a nickname. Showing it makes a new random link, hiding it retires the link |
 | `GET` | `/api/avatars/{id}` | | the picture, fetched from Gravatar; 404 once its owner hides it, or if Gravatar has none; 503 if Gravatar doesn't answer |
+| `GET` | `/t/{id}` | | the page behind a thread's link: the app's `index.html` with Open Graph and Twitter tags for the thread (its opening line, message count and opening photo), or saying it's gone. A link that names no thread gets the page as it is; 503 if the deployment's `index.html` didn't load |
 
 Posting needs `Authorization: Bearer <token>` with a token from Sign in with Aero. Without one, or with one that fails its checks, the answer is 401; so is a thread read with a failing token, which tells the page to sign in again. A thread tells each reader which messages are theirs (`mine`), whether their reply would reset the clock (`reply_extends`), and how far away a reply may come from (`reply_radius_km`); author ids, emails and anything derived from them never leave the server. A message shows its author's current nickname, and `avatar`, a link to their Gravatar while they show it. Messages run up to 280 characters, and may be empty when they carry `media`: a link to a file on YourImageShare, `https://yourimageshare.com/ib/<id>.<extension>`, for an image or video type it takes. Any other link is a 400. A message shows it as `media: { url, kind }`, where `kind` is `image` or `video`, or `null`. Errors come back as `{ error }`.
 

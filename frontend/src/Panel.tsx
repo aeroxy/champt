@@ -1,8 +1,9 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
-import { Film, ImageIcon, X } from 'lucide-react'
+import { Check, Film, ImageIcon, Link2, X } from 'lucide-react'
 import { type Pin, type Post, type Thread, problem } from './api'
 import { signIn } from './auth'
 import { ago, distanceKm, timeLeft } from './format'
+import { threadPath } from './link'
 import type { Spot } from './MapView'
 import { Avatar, Button, LiveChip, MediaView, TextButton } from './ui'
 import { type Upload, UploadButton } from './upload'
@@ -18,8 +19,21 @@ export type View =
   | { kind: 'thread'; id: number }
   | { kind: 'compose' }
 
-/** Side panel on wide screens, bottom sheet on phones. */
-function Shell({ label, onClose, children }: { label: ReactNode; onClose: () => void; children: ReactNode }) {
+/** Why a thread isn't on show: it's gone (it expired, or never was), or the request failed. */
+export type ThreadError = { text: string; gone: boolean }
+
+/** Side panel on wide screens, bottom sheet on phones. `actions` sit beside the close button. */
+function Shell({
+  label,
+  actions,
+  onClose,
+  children,
+}: {
+  label: ReactNode
+  actions?: ReactNode
+  onClose: () => void
+  children: ReactNode
+}) {
   return (
     <aside
       aria-label="Thread"
@@ -31,9 +45,12 @@ function Shell({ label, onClose, children }: { label: ReactNode; onClose: () => 
     >
       <div className="flex min-h-14 items-center gap-3 border-b border-border px-5">
         <div className="flex min-w-0 flex-1 items-center gap-2">{label}</div>
-        <Button variant="ghost" square className="-mr-2" aria-label="Close" title="Close (Esc)" onClick={onClose}>
-          <X className="size-4" />
-        </Button>
+        <div className="-mr-2 flex shrink-0 items-center">
+          {actions}
+          <Button variant="ghost" square aria-label="Close" title="Close (Esc)" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
       </div>
       {children}
     </aside>
@@ -83,7 +100,7 @@ export function ThreadPanel({
   onClose,
 }: {
   thread: Thread | null
-  error: string | null
+  error: ThreadError | null
   now: number
   me: Spot | null
   signedIn: boolean
@@ -110,11 +127,13 @@ export function ThreadPanel({
   )
 
   return (
-    <Shell label={label} onClose={onClose}>
+    <Shell label={label} actions={thread && <ShareButton key={thread.id} id={thread.id} />} onClose={onClose}>
       {error ? (
         <div className="px-5 py-10 text-center">
-          <p className="text-[18px] font-bold text-fg">{error}</p>
-          <p className="mt-1 text-[13px] text-fg-2">A thread goes after 24 hours unless someone else replies.</p>
+          <p className="text-[18px] font-bold text-fg">{error.text}</p>
+          {error.gone && (
+            <p className="mt-1 text-[13px] text-fg-2">A thread goes after 24 hours unless someone else replies.</p>
+          )}
         </div>
       ) : !thread ? (
         <p className="eyebrow px-5 py-10 text-center">Loading…</p>
@@ -163,6 +182,49 @@ export function ThreadPanel({
         </>
       )}
     </Shell>
+  )
+}
+
+/**
+ * Shares a thread's link: through the share sheet on a phone, where people
+ * expect one, and by copying it elsewhere. The address bar has it too.
+ */
+function ShareButton({ id }: { id: number }) {
+  const [copied, setCopied] = useState(false)
+  const sheet = 'share' in navigator && matchMedia('(pointer: coarse)').matches
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 2000)
+    return () => clearTimeout(timer)
+  }, [copied])
+
+  async function share() {
+    const url = location.origin + threadPath(id)
+    if (sheet) {
+      // Closing the sheet without sharing rejects, and that's fine.
+      await navigator.share({ url }).catch(() => {})
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+    } catch {
+      // The browser wouldn't allow it; the link is in the address bar.
+    }
+  }
+
+  const label = copied ? 'Link copied' : sheet ? 'Share' : 'Copy link'
+  return (
+    <>
+      <Button variant="ghost" square aria-label={label} title={label} onClick={share}>
+        {copied ? <Check className="size-4 text-status-700" /> : <Link2 className="size-4" />}
+      </Button>
+      {/* Outside the button, whose contents screen readers skip. */}
+      <span className="sr-only" aria-live="polite">
+        {copied ? 'Link copied' : ''}
+      </span>
+    </>
   )
 }
 
